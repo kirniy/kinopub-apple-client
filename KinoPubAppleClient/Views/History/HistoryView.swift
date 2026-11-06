@@ -174,6 +174,7 @@ struct HistoryItemCell: View {
       .padding(.horizontal, 8)
     }
     .background(Color.clear)
+    .kinoCardHover(cornerRadius: 12)
   }
 }
 

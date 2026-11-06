@@ -55,3 +55,96 @@ enum StreamQuality: String, CaseIterable, Identifiable {
     return value
   }
 }
+
+#if os(visionOS)
+import AVFoundation
+import Combine
+import SwiftUI
+
+struct VisionVideoRendition: Identifiable, Equatable {
+  let size: CGSize
+  let peakBitRate: Double
+
+  var id: CGSize { size }
+  var title: String { Self.label(for: size) }
+
+  static func label(for size: CGSize) -> String {
+    "\(Int(size.width)) × \(Int(size.height))"
+  }
+}
+
+struct VisionPlaybackQualityPanel: View {
+  @ObservedObject var manager: PlayerManager
+  var observesPresentationSize = false
+
+  var body: some View {
+    if observesPresentationSize, let item = manager.player.currentItem {
+      choices
+        .onReceive(item.publisher(for: \.presentationSize, options: [.initial, .new]).receive(on: RunLoop.main)) { size in
+          guard item === manager.player.currentItem else { return }
+          manager.updateVideoResolution(size)
+        }
+    } else {
+      choices
+    }
+  }
+
+  private var choices: some View {
+    VStack(spacing: 8) {
+      if manager.videoResolution != .zero {
+        Text("Playing \(VisionVideoRendition.label(for: manager.videoResolution))")
+          .font(.caption.monospacedDigit())
+      }
+      if let renditions = manager.visionRenditions {
+        if renditions.count > 1 {
+          ScrollView(.horizontal) {
+            HStack {
+              Button { manager.setVisionRendition(nil) } label: {
+                choiceLabel("Auto", selected: manager.selectedVisionRendition == nil && !manager.usesProfileQualityLimit)
+              }
+              ForEach(renditions) { rendition in
+                Button { manager.setVisionRendition(rendition) } label: {
+                  choiceLabel(rendition.title, selected: rendition == manager.selectedVisionRendition)
+                }
+              }
+            }
+          }
+          .defaultScrollAnchor(.center)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: 650)
+          Text(manager.usesProfileQualityLimit ? "Using your profile’s quality limit" : "Changes apply as the player loads more video.")
+            .font(.caption)
+        } else {
+          Text("No alternate video qualities available").font(.caption)
+        }
+      } else {
+        ProgressView("Checking available qualities")
+      }
+    }
+    .controlSize(.small)
+    .task { await manager.loadVisionRenditions() }
+  }
+
+  @ViewBuilder
+  private func choiceLabel(_ title: String, selected: Bool) -> some View {
+    if selected { Label(title, systemImage: "checkmark").accessibilityAddTraits(.isSelected) }
+    else { Text(title) }
+  }
+}
+
+struct VisionPlaybackQualityButton: View {
+  @ObservedObject var manager: PlayerManager
+  @State private var showsQuality = false
+
+  var body: some View {
+    Button { showsQuality = true } label: {
+      Label("Quality", systemImage: "gauge.with.dots.needle.67percent")
+    }
+    .popover(isPresented: $showsQuality, arrowEdge: .top) {
+      VisionPlaybackQualityPanel(manager: manager, observesPresentationSize: true)
+        .frame(minWidth: 300, idealWidth: 460)
+        .padding(20)
+    }
+  }
+}
+#endif

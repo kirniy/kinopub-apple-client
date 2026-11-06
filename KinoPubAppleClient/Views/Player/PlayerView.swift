@@ -8,7 +8,7 @@
 import Foundation
 import SwiftUI
 import AVKit
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 import UIKit
 #endif
 
@@ -17,6 +17,12 @@ struct PlayerView: View {
   @StateObject private var playerManager: PlayerManager
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject var navigationState: NavigationState
+#if os(visionOS)
+  @EnvironmentObject private var floatingPlayback: VisionFloatingPlayback
+  @Environment(\.openWindow) private var openWindow
+  @State private var movedToWindow = false
+  @State private var playbackPrepared = false
+#endif
 
   init(manager: @autoclosure @escaping () -> PlayerManager) {
     _playerManager = StateObject(wrappedValue: manager())
@@ -46,6 +52,51 @@ struct PlayerView: View {
         AppDelegate.orientationLock = .all
       }
       .playbackErrorAlert($playerManager.playbackError, onDismiss: { dismiss() })
+#elseif os(visionOS)
+    Group {
+      if !movedToWindow {
+        Group {
+          if playerManager.is3D { VisionStereoPlayer(manager: playerManager) }
+          else { VisionNativePlayer(player: playerManager.player, qualityManager: playerManager) }
+        }
+          .safeAreaInset(edge: .top, spacing: 0) {
+            if !playerManager.is3D || playerManager.visionStereoControlsVisible || playerManager.resolvedStereoLayout == .native {
+              HStack {
+                Button { dismiss() } label: {
+                  Label("Back", systemImage: "chevron.left")
+                }
+                .keyboardShortcut(.cancelAction)
+                Spacer()
+                if !playerManager.is3D {
+                  VisionPlaybackQualityButton(manager: playerManager)
+                }
+                Button { moveToWindow() } label: {
+                  Label("Float Video", systemImage: "pip.enter")
+                }
+                .disabled(!playbackPrepared)
+              }
+              .padding(.horizontal, 20)
+              .padding(.vertical, 8)
+            }
+          }
+      }
+    }
+    .task {
+      floatingPlayback.manager?.player.pause()
+      let session = AVAudioSession.sharedInstance()
+      try? session.setCategory(.playback, mode: .moviePlayback)
+      try? session.setIntendedSpatialExperience(.headTracked(soundStageSize: .large, anchoringStrategy: .automatic))
+      try? session.setActive(true)
+      await playerManager.fetchWatchMark()
+      guard !Task.isCancelled else { return }
+      playerManager.seekToContinueWatching()
+      playerManager.player.play()
+      playbackPrepared = true
+    }
+    .onDisappear {
+      if !movedToWindow { playerManager.player.pause() }
+    }
+    .playbackErrorAlert($playerManager.playbackError, onDismiss: { dismiss() })
 #elseif os(macOS)
     // Native macOS player (AVKit): floating controls, scrubber, volume, the system fullscreen toggle
     // and PiP — the standard QuickTime-style experience. No custom close button; exit with Esc, or the
@@ -80,10 +131,135 @@ struct PlayerView: View {
   }
 #endif
 
+#if os(visionOS)
+  private func moveToWindow() {
+    movedToWindow = true
+    floatingPlayback.show(playerManager)
+    openWindow(id: VisionFloatingPlayback.windowID, value: VisionFloatingPlayback.windowValue)
+    dismiss()
+  }
+#endif
+
   private func toggleSidebar() {
     navigationState.columnVisibility = .detailOnly
   }
 }
+
+#if os(visionOS)
+@MainActor
+final class VisionFloatingPlayback: ObservableObject {
+  static let windowID = "kinopub-floating-video"
+  static let windowValue = "current"
+  @Published private(set) var manager: PlayerManager?
+
+  func show(_ manager: PlayerManager) {
+    if self.manager !== manager { self.manager?.player.pause() }
+    self.manager = manager
+  }
+
+  func close() {
+    manager?.player.pause()
+    manager = nil
+  }
+}
+
+struct VisionFloatingPlayer: View {
+  @EnvironmentObject private var playback: VisionFloatingPlayback
+  @Environment(\.dismissWindow) private var dismissWindow
+
+  var body: some View {
+    Group {
+      if let manager = playback.manager {
+        VisionFloatingPlayerContent(manager: manager, onErrorDismiss: close)
+      } else {
+        ContentUnavailableView("No Video Playing", systemImage: "play.rectangle")
+      }
+    }
+    .safeAreaInset(edge: .top, spacing: 0) {
+      if let manager = playback.manager {
+        VisionFloatingCloseBar(manager: manager, close: close)
+      }
+    }
+    .onDisappear { playback.close() }
+  }
+
+  private func close() {
+    playback.close()
+    dismissWindow(id: VisionFloatingPlayback.windowID, value: VisionFloatingPlayback.windowValue)
+  }
+}
+
+private struct VisionFloatingCloseBar: View {
+  @ObservedObject var manager: PlayerManager
+  let close: () -> Void
+
+  var body: some View {
+    if !manager.is3D || manager.visionStereoControlsVisible || manager.resolvedStereoLayout == .native {
+      HStack {
+        Spacer()
+        if !manager.is3D {
+          VisionPlaybackQualityButton(manager: manager)
+        }
+        Button(action: close) { Label("Close Video", systemImage: "xmark") }
+          .keyboardShortcut(.cancelAction)
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 6)
+    }
+  }
+}
+
+private struct VisionFloatingPlayerContent: View {
+  @ObservedObject var manager: PlayerManager
+  let onErrorDismiss: () -> Void
+
+  var body: some View {
+    Group {
+      if manager.is3D { VisionStereoPlayer(manager: manager) }
+      else { VisionNativePlayer(player: manager.player, qualityManager: manager) }
+    }
+      .playbackErrorAlert($manager.playbackError, onDismiss: onErrorDismiss)
+  }
+}
+
+struct VisionNativePlayer: UIViewControllerRepresentable {
+  let player: AVPlayer
+  var qualityManager: PlayerManager? = nil
+
+  func makeUIViewController(context: Context) -> AVPlayerViewController {
+    let controller = AVPlayerViewController()
+    controller.player = player
+    if let qualityManager {
+      let panel = UIHostingController(rootView: VisionPlaybackQualityPanel(manager: qualityManager,
+                                                                           observesPresentationSize: true)
+        .padding(16))
+      panel.title = String(localized: "Quality")
+      panel.preferredContentSize = CGSize(width: 620, height: 145)
+      controller.customInfoViewControllers = [panel]
+    }
+    controller.videoGravity = .resizeAspect
+    if #available(visionOS 26.0, *) {
+      controller.experienceController.allowedExperiences = .recommended(including: [.expanded, .immersive])
+    } else {
+      controller.experienceController.allowedExperiences = .recommended(including: [.expanded])
+    }
+    if #available(visionOS 27.0, *) {
+      let portal = AVPortalViewport()
+      portal.aspectRatio = 2.39
+      controller.viewport.portal = portal
+    }
+    return controller
+  }
+
+  func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+    if controller.player !== player { controller.player = player }
+  }
+
+  static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: ()) {
+    controller.player = nil
+  }
+}
+#endif
 
 #if os(macOS)
 /// The native macOS video view (AVKit `AVPlayerView`) — floating controls, scrubber, volume, the

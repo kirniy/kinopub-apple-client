@@ -6,7 +6,6 @@
 //
 import SwiftUI
 import KinoPubUI
-import PopupView
 #if canImport(AppKit)
 import AppKit
 #endif

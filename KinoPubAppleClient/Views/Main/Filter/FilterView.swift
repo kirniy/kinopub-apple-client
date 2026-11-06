@@ -38,6 +38,15 @@ struct FilterView: View {
         kinopoiskRatingSection
         imdbRatingSection
         qualitySection
+#if os(visionOS)
+        Section {
+          Button("Clear".localized, role: .destructive) {
+            model.clear()
+            onClear()
+            dismiss()
+          }
+        }
+#endif
       }
       .formStyle(.grouped)
       .scrollContentBackground(.hidden)
@@ -48,11 +57,16 @@ struct FilterView: View {
       #endif
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
+#if os(visionOS)
+          Button("Cancel".localized) { dismiss() }
+            .keyboardShortcut(.cancelAction)
+#else
           Button("Clear".localized, role: .destructive) {
             model.clear()
             onClear()
             dismiss()
           }
+#endif
         }
         ToolbarItem(placement: .confirmationAction) {
           Button("Apply".localized) {
@@ -62,7 +76,11 @@ struct FilterView: View {
         }
       }
     }
+#if os(visionOS)
+    .presentationSizing(.form)
+#else
     .presentationDetents([.medium, .large])
+#endif
   }
 
   // MARK: - Genre / Country

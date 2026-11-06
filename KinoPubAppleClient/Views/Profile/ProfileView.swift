@@ -16,6 +16,7 @@ struct ProfileView: View {
   @EnvironmentObject var errorHandler: ErrorHandler
   @Environment(\.appContext) var appContext
   @StateObject private var model: ProfileModel
+  private let onClose: (() -> Void)?
   @AppStorage("selectedLanguage") private var selectedLanguage: String = (Locale.current.language.languageCode?.identifier ?? "en")
   /// Caps streaming quality; read by PlayerManager when building the AVPlayerItem.
   @AppStorage(StreamQuality.userDefaultsKey) private var streamQuality: StreamQuality = .auto
@@ -25,8 +26,9 @@ struct ProfileView: View {
   @Environment(\.sectionEmbedded) private var sectionEmbedded
   @Environment(\.dismiss) private var dismiss
 
-  init(model: @autoclosure @escaping () -> ProfileModel) {
+  init(model: @autoclosure @escaping () -> ProfileModel, onClose: (() -> Void)? = nil) {
     _model = StateObject(wrappedValue: model())
+    self.onClose = onClose
   }
   
   var body: some View {
@@ -73,15 +75,15 @@ struct ProfileView: View {
 
             Section {
               NavigationLink("Sections".localized) {
-                SectionsSettingsView()
+                SectionsSettingsView().visionProfileBack()
               }
               NavigationLink("Device settings".localized) {
                 DeviceSettingsView(model: DeviceSettingsModel(deviceService: appContext.deviceService,
-                                                              errorHandler: errorHandler))
+                                                              errorHandler: errorHandler)).visionProfileBack()
               }
               NavigationLink("Devices".localized) {
                 DevicesView(model: DevicesListModel(deviceService: appContext.deviceService,
-                                                    errorHandler: errorHandler))
+                                                    errorHandler: errorHandler)).visionProfileBack()
               }
             }
 
@@ -110,6 +112,25 @@ struct ProfileView: View {
         }
       }
       .kinoScreen("Profile".localized)
+      .toolbar {
+        if let onClose {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+          }
+        }
+      }
+#if os(visionOS)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        if let onClose {
+          HStack {
+            Button(action: onClose) { Label("Close Profile", systemImage: "xmark") }
+            Spacer()
+          }
+          .padding(.horizontal, 20)
+          .padding(.vertical, 8)
+        }
+      }
+#endif
       .onAppear(perform: {
         model.fetch()
       })
@@ -226,3 +247,34 @@ struct ProfileView_Previews: PreviewProvider {
                                                          deviceService: DeviceServiceMock())))
   }
 }
+
+private extension View {
+  @ViewBuilder
+  func visionProfileBack() -> some View {
+#if os(visionOS)
+    modifier(VisionProfileBack())
+#else
+    self
+#endif
+  }
+}
+
+#if os(visionOS)
+private struct VisionProfileBack: ViewModifier {
+  @Environment(\.dismiss) private var dismiss
+
+  func body(content: Content) -> some View {
+    content.safeAreaInset(edge: .top, spacing: 0) {
+      HStack {
+        Button { dismiss() } label: {
+          Label("Back to Profile", systemImage: "chevron.left")
+        }
+        .keyboardShortcut(.cancelAction)
+        Spacer()
+      }
+      .padding(.horizontal, 20)
+      .padding(.vertical, 8)
+    }
+  }
+}
+#endif

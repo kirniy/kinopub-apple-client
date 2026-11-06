@@ -74,6 +74,24 @@ struct PlatformInlinePlayer: UIViewControllerRepresentable {
     }
   }
 }
+#elseif os(visionOS)
+struct PlatformInlinePlayer: View {
+  let url: URL
+  @State private var player = AVPlayer()
+
+  var body: some View {
+    VisionNativePlayer(player: player)
+      .task(id: url) {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setIntendedSpatialExperience(.headTracked(soundStageSize: .large, anchoringStrategy: .automatic))
+        try? session.setActive(true)
+        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        player.play()
+      }
+      .onDisappear { player.pause() }
+  }
+}
 #else
 struct PlatformInlinePlayer: NSViewRepresentable {
   let url: URL

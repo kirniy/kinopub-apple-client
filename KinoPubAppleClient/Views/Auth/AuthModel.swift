@@ -10,6 +10,9 @@ import SwiftUI
 import KinoPubBackend
 import KinoPubLogging
 import OSLog
+#if os(visionOS)
+import UIKit
+#endif
 
 @MainActor
 class AuthModel: ObservableObject {
@@ -65,7 +68,7 @@ class AuthModel: ObservableObject {
 
   func copyCode() {
     guard !deviceCode.isEmpty else { return }
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     UIPasteboard.general.string = deviceCode
     #elseif os(macOS)
     NSPasteboard.general.clearContents()
@@ -87,7 +90,7 @@ class AuthModel: ObservableObject {
 
     Logger.app.debug("open activation url: \(url)")
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     UIApplication.shared.open(url)
     #endif
   }

@@ -14,6 +14,7 @@ import KinoPubKit
 struct Sidebar: View {
 
   @Binding var selection: SidebarItem?
+  var onSelect: () -> Void = {}
 
   @Environment(\.appContext) var appContext
   @EnvironmentObject var authState: AuthState
@@ -82,6 +83,28 @@ struct Sidebar: View {
   @ViewBuilder
   func row(_ item: SidebarItem) -> some View {
     let locked = !networkMonitor.isOnline && !item.isAvailableOffline
+#if os(visionOS)
+    Button {
+      guard !locked else { return }
+      selection = item
+      navigationState.popToRoot(for: item)
+      onSelect()
+    } label: {
+      rowLabel(item, locked: locked)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .hoverEffect()
+    .disabled(locked)
+    .accessibilityAddTraits(selection == item ? .isSelected : [])
+    .listRowBackground(selection == item ? Color.KinoPub.accent.opacity(0.18) : Color.clear)
+#else
+    rowLabel(item, locked: locked).tag(item)
+#endif
+  }
+
+  private func rowLabel(_ item: SidebarItem, locked: Bool) -> some View {
     Label {
       HStack {
         Text(item.title.localized)
@@ -94,7 +117,6 @@ struct Sidebar: View {
       Image(systemName: item.systemImage)
     }
     .foregroundStyle(locked ? Color.KinoPub.subtitle : Color.KinoPub.text)
-    .tag(item)
   }
 
   private var profileSheet: some View {
@@ -118,21 +140,7 @@ private struct ProfileSheetContent: View {
   }
 
   var body: some View {
-    // ProfileView already provides its own NavigationStack; attach the
-    // dismiss control to that bar instead of nesting another stack.
-    ProfileView(model: model)
-      .toolbar {
-        // `.cancellationAction` adapts per platform (no #if): a leading close on iOS/iPad, the
-        // standard cancel slot on macOS.
-        ToolbarItem(placement: .cancellationAction) {
-          Button {
-            dismiss()
-          } label: {
-            Image(systemName: "xmark")
-              .fontWeight(.bold)
-          }
-        }
-      }
+    ProfileView(model: model, onClose: { dismiss() })
   }
 }
 

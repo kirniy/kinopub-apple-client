@@ -36,6 +36,7 @@ public struct ContentItemView: View {
     // Unified placeholder: native redaction (matches PosterCard.placeholder), no shimmer.
     .redacted(reason: isPlaceholder ? .placeholder : [])
     .opacity(isPlaceholder ? 0.45 : 1)
+    .kinoCardHover(cornerRadius: 12)
   }
 
   var image: some View {

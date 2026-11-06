@@ -50,9 +50,9 @@ public struct PosterCard: View {
       }
     }
     if let width {
-      stack.frame(width: width)
+      stack.frame(width: width).kinoCardHover(cornerRadius: cornerRadius)
     } else {
-      stack.frame(maxWidth: .infinity, alignment: .leading)
+      stack.frame(maxWidth: .infinity, alignment: .leading).kinoCardHover(cornerRadius: cornerRadius)
     }
   }
 
@@ -127,5 +127,18 @@ public struct PosterCard: View {
     PosterCard(imageURL: nil, title: "Placeholder", width: width)
       .redacted(reason: .placeholder)
       .opacity(0.45)
+  }
+}
+
+public extension View {
+  /// Match visionOS gaze feedback to the artwork's rounded corners.
+  @ViewBuilder
+  func kinoCardHover(cornerRadius: CGFloat) -> some View {
+#if os(visionOS)
+    contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .hoverEffect(.highlight)
+#else
+    self
+#endif
   }
 }

@@ -7,7 +7,6 @@
 
 import Foundation
 import SwiftUI
-import PopupView
 import KinoPubUI
 
 /// Extension for the View protocol to handle error states.

@@ -9,7 +9,7 @@ import Foundation
 import KinoPubBackend
 import OSLog
 import KinoPubLogging
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 import UIKit
 #endif
 
@@ -55,7 +55,7 @@ final class DeviceServiceImpl: DeviceService {
     var title: String
     let hardware: String
     let software: String
-#if os(iOS)
+#if os(iOS) || os(visionOS)
     title = UIDevice.current.name
     hardware = "\(UIDevice.current.model) (\(Self.machineModel))"
     software = "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)"

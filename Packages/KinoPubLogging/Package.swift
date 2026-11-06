@@ -5,7 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "KinoPubLogging",
-    platforms: [.macOS(.v13), .iOS(.v16)],
+    platforms: [.macOS(.v13), .iOS(.v16), .visionOS("2.0")],
     products: [
         .library(
             name: "KinoPubLogging",

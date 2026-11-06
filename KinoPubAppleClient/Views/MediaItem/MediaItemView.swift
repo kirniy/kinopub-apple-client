@@ -48,7 +48,7 @@ struct MediaItemView: View {
 
   /// True when the app uses the sidebar (iPad/macOS) so facets can deep-link into a section.
   private var usesSidebarSections: Bool {
-#if os(macOS)
+#if os(macOS) || os(visionOS)
     return true
 #else
     return horizontalSizeClass == .regular
@@ -414,7 +414,7 @@ struct MediaItemView: View {
       circleIcon(libraryState.isInAnyBookmarkFolder(itemId: mediaItem.id) ? "folder.fill" : "folder")
     }
     .menuIndicator(.hidden)
-    #if os(macOS)
+    #if os(macOS) || os(visionOS)
     // `.button` + `.plain` renders our circle label faithfully (borderlessButton strips the
     // background and tints the symbol with the accent colour).
     .menuStyle(.button)
@@ -431,7 +431,7 @@ struct MediaItemView: View {
       circleIcon(movieDownloadGlyph)
     }
     .menuIndicator(.hidden)
-#if os(macOS)
+#if os(macOS) || os(visionOS)
     .menuStyle(.button)
     .buttonStyle(.plain)
     .fixedSize()
@@ -528,6 +528,10 @@ struct MediaItemView: View {
       .foregroundStyle(.white)
       .frame(width: 50, height: 50)
       .background(Circle().fill(Color.white.opacity(0.18)))
+#if os(visionOS)
+      .contentShape(.hoverEffect, Circle())
+      .hoverEffect(.highlight)
+#endif
   }
 
   /// Download icon glyph for a movie's download button, reflecting the client library state.

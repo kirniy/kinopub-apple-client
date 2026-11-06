@@ -21,6 +21,12 @@ Native **iOS · iPadOS · macOS** client for the [kino.pub](https://kino.pub) se
 > [leoru/kinopub-apple-client](https://github.com/leoru/kinopub-apple-client) with many additional
 > features and cross-platform fixes. All credit for the original project goes to the upstream authors.
 
+## Apple Vision Pro preview
+
+This fork adds a native visionOS app for Apple Vision Pro. It supports video quality selection in the system player and the 3D player, a floating video window, and stereo playback for side-by-side and top-and-bottom films. The system player supports Apple Environments for compatible video. Frame-packed 3D films play in KinoPub’s separate large window.
+
+[Download the visionOS preview](https://github.com/kirniy/kinopub-apple-client/releases/tag/visionos-build-10) · [Build and sign the visionOS app](VISIONOS-PREVIEW.md)
+
 ## Features
 
 - 🎬 Catalog of movies & series, collections, bookmarks, watch history, "continue watching"

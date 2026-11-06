@@ -53,6 +53,8 @@ struct TabsNavigationView: View {
     .tabBar
 #elseif os(macOS)
     .windowToolbar
+#else
+    .automatic
 #endif
   }
 

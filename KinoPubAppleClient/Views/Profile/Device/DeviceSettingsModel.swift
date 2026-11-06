@@ -64,7 +64,7 @@ class DeviceSettingsModel: ObservableObject {
 
   /// iOS-standard success feedback: a success haptic plus a brief "Saved" confirmation toast.
   private func confirmSaved() {
-    #if canImport(UIKit)
+    #if os(iOS)
     UINotificationFeedbackGenerator().notificationOccurred(.success)
     #endif
     didSave = true

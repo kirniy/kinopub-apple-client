@@ -75,6 +75,7 @@ public struct EpisodeCard: View {
       }
     }
     .frame(width: width, alignment: .leading)
+    .kinoCardHover(cornerRadius: 12)
   }
 
   private var thumbnail: some View {

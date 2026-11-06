@@ -28,7 +28,7 @@ struct MainView: View {
   var toolbarItemPlacement: ToolbarItemPlacement {
 #if os(iOS)
     .topBarTrailing
-#elseif os(macOS)
+#else
     .navigation
 #endif
   }
@@ -54,7 +54,7 @@ struct MainView: View {
           }
         }
 
-        ToolbarItem(placement: toolbarItemPlacement) {
+        ToolbarItem(placement: catalogFilterPlacement(fallback: toolbarItemPlacement)) {
           Button {
             showFilterPicker = true
           } label: {
@@ -140,7 +140,7 @@ struct FilteredCatalogView: View {
   private var toolbarItemPlacement: ToolbarItemPlacement {
 #if os(iOS)
     .topBarTrailing
-#elseif os(macOS)
+#else
     .navigation
 #endif
   }
@@ -166,7 +166,7 @@ struct FilteredCatalogView: View {
           SortDotIcon(active: catalog.isSortNonDefault)
         }
       }
-      ToolbarItem(placement: toolbarItemPlacement) {
+      ToolbarItem(placement: catalogFilterPlacement(fallback: toolbarItemPlacement)) {
         Button { showFilterPicker = true } label: {
           FilterBadgeIcon(count: catalog.activeFilterCount)
         }
@@ -271,13 +271,29 @@ struct PersonSearchView: View {
 
 // MARK: - Toolbar indicators
 
+private func catalogFilterPlacement(fallback: ToolbarItemPlacement) -> ToolbarItemPlacement {
+#if os(visionOS)
+  .primaryAction
+#else
+  fallback
+#endif
+}
+
 /// Filter icon with a count badge when filters are active. iOS 26+ uses the system `.badge`
 /// (not clipped by the toolbar group); older OSes fall back to a corner overlay. No padding
 /// is applied to the icon itself, so the toolbar icons keep their native alignment.
 private struct FilterBadgeIcon: View {
   let count: Int
   var body: some View {
-    if #available(iOS 26.0, macOS 26.0, *) {
+#if os(visionOS)
+    Label {
+      Text(count > 0 ? "\("Filter".localized) (\(count))" : "Filter".localized)
+    } icon: {
+      Image(systemName: "slider.horizontal.3")
+    }
+    .labelStyle(.titleAndIcon)
+#else
+    if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
       Image(systemName: "line.3.horizontal.decrease.circle")
         .foregroundStyle(count > 0 ? Color.KinoPub.accent : Color.KinoPub.text)
         .modifier(SystemCountBadge(count: count))
@@ -296,6 +312,7 @@ private struct FilterBadgeIcon: View {
         }
       }
     }
+#endif
   }
 }
 

@@ -21,6 +21,10 @@ struct KinoPubAppleClientApp: App {
                                          accessTokenService: AppContext.shared.accessTokenService,
                                          deviceService: AppContext.shared.deviceService)
   @StateObject var networkMonitor = NetworkMonitor()
+#if os(visionOS)
+  @StateObject private var floatingPlayback = VisionFloatingPlayback()
+  @StateObject private var stereoFullscreen = VisionStereoFullscreen()
+#endif
 
 #if os(macOS)
   @StateObject var windowSettings = WindowSettings()
@@ -47,6 +51,10 @@ struct KinoPubAppleClientApp: App {
         .environmentObject(errorHandler)
         .environmentObject(networkMonitor)
         .environmentObject(AppContext.shared.libraryState)
+#if os(visionOS)
+        .environmentObject(floatingPlayback)
+        .environmentObject(stereoFullscreen)
+#endif
         // Register this device's name once authorized, so it isn't listed as "unknown".
         .task(id: authState.userState) {
           if authState.userState == .authorized {
@@ -65,6 +73,31 @@ struct KinoPubAppleClientApp: App {
     }
 #if os(macOS)
     .windowResizability(.contentSize)
+#elseif os(visionOS)
+    .defaultSize(width: 1200, height: 800)
+    .immersiveEnvironmentBehavior(.coexist)
+#endif
+
+#if os(visionOS)
+    WindowGroup("KinoPub Video", id: VisionFloatingPlayback.windowID, for: String.self) { _ in
+      VisionFloatingPlayer()
+        .environmentObject(floatingPlayback)
+        .environmentObject(stereoFullscreen)
+    }
+    .defaultSize(width: 560, height: 350)
+    .immersiveEnvironmentBehavior(.coexist)
+
+    WindowGroup("KinoPub 3D", id: VisionStereoFullscreen.windowID, for: String.self) { _ in
+      if let manager = stereoFullscreen.manager {
+        VisionStereoLargeWindow(manager: manager)
+          .environmentObject(stereoFullscreen)
+      }
+    }
+    .windowStyle(.plain)
+    .defaultSize(width: 1800, height: 1100)
+    .defaultLaunchBehavior(.suppressed)
+    .restorationBehavior(.disabled)
+    .immersiveEnvironmentBehavior(.coexist)
 #endif
     
 #if os(macOS)

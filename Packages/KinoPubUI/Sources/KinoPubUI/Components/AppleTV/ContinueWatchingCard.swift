@@ -46,6 +46,7 @@ public struct ContinueWatchingCard: View {
       .overlay(alignment: .bottomLeading) { overlayContent }
       .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
       .frame(width: width, alignment: .leading)
+      .kinoCardHover(cornerRadius: 12)
   }
 
   private var artwork: some View {

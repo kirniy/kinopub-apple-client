@@ -14,14 +14,6 @@ import UIKit
 
 struct RootView: View {
 
-  var placement: ToolbarPlacement {
-#if os(iOS)
-    .tabBar
-#elseif os(macOS)
-    .windowToolbar
-#endif
-  }
-
   var body: some View {
     // Apple-recommended single source of truth for the accent: set the brand green tint once at
     // the root so every control (toggles, pickers, links, progress, etc.) inherits it instead of
@@ -40,7 +32,7 @@ struct RootView: View {
     } else {
       TabsNavigationView()
     }
-#elseif os(macOS)
+#elseif os(macOS) || os(visionOS)
     SidebarView()
 #endif
   }

@@ -21,6 +21,10 @@ struct SidebarView: View {
 
   @State private var sectionBeforeOffline: SidebarItem?
   @State private var showReconnected = false
+#if os(visionOS)
+  @State private var compactColumn: NavigationSplitViewColumn = .detail
+  @State private var isSidebarVisible = false
+#endif
 
   var body: some View {
 #if os(macOS)
@@ -38,22 +42,26 @@ struct SidebarView: View {
   }
 
   private var mainContent: some View {
-    // Every section's detail NavigationStack now uses the shared `Route` element type, so the
-    // NavigationSplitView detail column reconciles cleanly across section switches (no
-    // AnyNavigationPath.comparisonTypeMismatch). That means no per-selection `.id` hack — the
-    // sidebar keeps its identity, scroll position, and selection animation.
-    NavigationSplitView(columnVisibility: $navigationState.columnVisibility) {
-      Sidebar(selection: $navigationState.sidebarSelection)
-    } detail: {
-      SidebarNavigationDetail(selection: $navigationState.sidebarSelection)
-        // Keep the offline banner inside the detail column so it never covers the sidebar.
-        .safeAreaInset(edge: .top, spacing: 0) {
-          if let banner = bannerState {
-            OfflineBanner(tone: banner.tone, title: banner.title)
+    splitView
+      .accentColor(Color.KinoPub.accent)
+#if os(visionOS)
+      .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
+        HStack(spacing: 8) {
+          if !isSidebarVisible {
+            Button {
+              navigationState.columnVisibility = .all
+              compactColumn = .sidebar
+            } label: {
+              Label("Library".localized, systemImage: "sidebar.left")
+            }
           }
+          libraryShortcut(.history)
+          libraryShortcut(.bookmarks)
         }
-    }
-    .accentColor(Color.KinoPub.accent)
+        .padding(8)
+        .glassBackgroundEffect(in: Capsule())
+      }
+#endif
     .animation(.easeInOut(duration: 0.25), value: networkMonitor.isOnline)
     .animation(.easeInOut(duration: 0.25), value: showReconnected)
     .onChange(of: networkMonitor.isOnline) { online in
@@ -74,6 +82,49 @@ struct SidebarView: View {
     .task {
       await authState.check()
     }
+  }
+
+#if os(visionOS)
+  private func libraryShortcut(_ item: SidebarItem) -> some View {
+    Button {
+      navigationState.sidebarSelection = item
+      navigationState.popToRoot(for: item)
+      compactColumn = .detail
+    } label: {
+      Label(item.title.localized, systemImage: item.systemImage)
+    }
+    .disabled(!networkMonitor.isOnline && !item.isAvailableOffline)
+  }
+#endif
+
+  @ViewBuilder
+  private var splitView: some View {
+#if os(visionOS)
+    NavigationSplitView(columnVisibility: $navigationState.columnVisibility,
+                        preferredCompactColumn: $compactColumn) {
+      Sidebar(selection: $navigationState.sidebarSelection, onSelect: { compactColumn = .detail })
+        .onAppear { isSidebarVisible = true }
+        .onDisappear { isSidebarVisible = false }
+    } detail: {
+      splitDetail
+    }
+    .navigationSplitViewStyle(.balanced)
+#else
+    NavigationSplitView(columnVisibility: $navigationState.columnVisibility) {
+      Sidebar(selection: $navigationState.sidebarSelection)
+    } detail: {
+      splitDetail
+    }
+#endif
+  }
+
+  private var splitDetail: some View {
+    SidebarNavigationDetail(selection: $navigationState.sidebarSelection)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        if let banner = bannerState {
+          OfflineBanner(tone: banner.tone, title: banner.title)
+        }
+      }
   }
 
   // MARK: - Offline mode
