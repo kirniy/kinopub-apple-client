@@ -1,0 +1,4 @@
+framework module KinoCinemaRemux {
+  umbrella header "KinoCinemaRemux.h"
+  export *
+}

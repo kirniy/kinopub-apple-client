@@ -20,6 +20,9 @@ struct ProfileView: View {
   @AppStorage("selectedLanguage") private var selectedLanguage: String = (Locale.current.language.languageCode?.identifier ?? "en")
   /// Caps streaming quality; read by PlayerManager when building the AVPlayerItem.
   @AppStorage(StreamQuality.userDefaultsKey) private var streamQuality: StreamQuality = .auto
+#if os(visionOS)
+  @AppStorage(VisionCatalogMultiview.preferenceKey) private var catalogMultiviewEnabled = false
+#endif
 
   @State private var showLogoutAlert: Bool = false
   @State private var showStorage: Bool = false
@@ -58,6 +61,14 @@ struct ProfileView: View {
             languageSection
 
             videoQualitySection
+
+#if os(visionOS)
+            Section {
+              Toggle("Multiview for Movies and Series", isOn: $catalogMultiviewEnabled)
+            } footer: {
+              Text("Add up to five 2D videos from movie or episode pages. Open Multiview from the library controls.")
+            }
+#endif
 
             Section {
               Button {

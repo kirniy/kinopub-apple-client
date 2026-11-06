@@ -22,6 +22,11 @@ struct SidebarView: View {
   @State private var sectionBeforeOffline: SidebarItem?
   @State private var showReconnected = false
 #if os(visionOS)
+  @EnvironmentObject private var floatingPlayback: VisionFloatingPlayback
+  @AppStorage(VisionCatalogMultiview.preferenceKey) private var catalogMultiviewEnabled = false
+  @StateObject private var catalogMultiview = VisionCatalogMultiview()
+  @State private var showsCatalogMultiview = false
+  @State private var startCatalogMultiview = false
   @State private var compactColumn: NavigationSplitViewColumn = .detail
   @State private var isSidebarVisible = false
 #endif
@@ -57,9 +62,27 @@ struct SidebarView: View {
           }
           libraryShortcut(.history)
           libraryShortcut(.bookmarks)
+          if catalogMultiviewEnabled {
+            Button { showsCatalogMultiview = true } label: {
+              Label("Multiview (\(catalogMultiview.items.count))", systemImage: "rectangle.split.2x2")
+            }
+          }
         }
         .padding(8)
         .glassBackgroundEffect(in: Capsule())
+      }
+      .environmentObject(catalogMultiview)
+      .sheet(isPresented: $showsCatalogMultiview, onDismiss: startQueuedMultiview) {
+        VisionCatalogMultiviewSheet(queue: catalogMultiview, session: catalogMultiview.session) {
+          startCatalogMultiview = true
+          showsCatalogMultiview = false
+        }
+      }
+      .onChange(of: catalogMultiviewEnabled) { _, enabled in
+        if !enabled { catalogMultiview.reset() }
+      }
+      .onChange(of: authState.userState) { _, state in
+        if state != .authorized { catalogMultiview.reset() }
       }
 #endif
     .animation(.easeInOut(duration: 0.25), value: networkMonitor.isOnline)
@@ -85,6 +108,17 @@ struct SidebarView: View {
   }
 
 #if os(visionOS)
+  private func startQueuedMultiview() {
+    guard startCatalogMultiview, catalogMultiviewEnabled else {
+      startCatalogMultiview = false
+      return
+    }
+    startCatalogMultiview = false
+    let items = catalogMultiview.items
+    floatingPlayback.manager?.player.pause()
+    Task { await catalogMultiview.session.start(items, available: items) }
+  }
+
   private func libraryShortcut(_ item: SidebarItem) -> some View {
     Button {
       navigationState.sidebarSelection = item
@@ -170,3 +204,69 @@ struct SideBarView_Previews: PreviewProvider {
     SidebarView()
   }
 }
+
+#if os(visionOS)
+@MainActor
+final class VisionCatalogMultiview: ObservableObject {
+  static let preferenceKey = "visionCatalogMultiviewEnabled"
+  @Published private(set) var items: [VisionMultiviewItem] = []
+  let session = VisionMultiviewSession()
+
+  func contains(_ id: Int) -> Bool { items.contains { $0.id == id } }
+
+  func toggle(_ item: VisionMultiviewItem) {
+    guard session.activeIDs.isEmpty, !session.isChanging else { return }
+    if contains(item.id) {
+      items.removeAll { $0.id == item.id }
+    } else if items.count < VisionMultiviewSession.limit {
+      items.append(item)
+    }
+  }
+
+  func reset() {
+    session.stop()
+    items.removeAll()
+  }
+}
+
+private struct VisionCatalogMultiviewSheet: View {
+  @ObservedObject var queue: VisionCatalogMultiview
+  @ObservedObject var session: VisionMultiviewSession
+  let start: () -> Void
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    NavigationStack {
+      List {
+        if queue.items.isEmpty {
+          ContentUnavailableView("No Videos Added", systemImage: "rectangle.split.2x2",
+            description: Text("Add movies from their detail pages or episodes from their menus."))
+        }
+        ForEach(queue.items) { item in
+          HStack {
+            Text(item.title)
+            Spacer()
+            Button("Remove", systemImage: "minus.circle") { queue.toggle(item) }
+              .disabled(session.isChanging || !session.activeIDs.isEmpty)
+          }
+        }
+        if let reason = session.errorMessage { Text(reason).font(.footnote) }
+      }
+      .navigationTitle("Multiview")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          if session.activeIDs.isEmpty {
+            Button("Start Multiview", action: start).disabled(queue.items.count < 2 || session.isChanging)
+          } else {
+            Button("Close Multiview") { session.stop() }
+          }
+        }
+      }
+    }
+    .presentationSizing(.form)
+  }
+}
+#endif

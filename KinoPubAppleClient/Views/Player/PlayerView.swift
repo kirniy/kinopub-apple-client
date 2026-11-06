@@ -230,11 +230,9 @@ struct VisionNativePlayer: UIViewControllerRepresentable {
     let controller = AVPlayerViewController()
     controller.player = player
     if let qualityManager {
-      let panel = UIHostingController(rootView: VisionPlaybackQualityPanel(manager: qualityManager,
-                                                                           observesPresentationSize: true)
-        .padding(16))
+      let panel = UIHostingController(rootView: VisionPlaybackQualityPanel(manager: qualityManager))
       panel.title = String(localized: "Quality")
-      panel.preferredContentSize = CGSize(width: 620, height: 145)
+      panel.preferredContentSize = CGSize(width: 620, height: 220)
       controller.customInfoViewControllers = [panel]
     }
     controller.videoGravity = .resizeAspect

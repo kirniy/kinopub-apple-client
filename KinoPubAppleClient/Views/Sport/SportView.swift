@@ -21,10 +21,10 @@ struct SportView: View {
   @StateObject private var model: SportModel
 #if os(visionOS)
   @EnvironmentObject private var floatingPlayback: VisionFloatingPlayback
-  @StateObject private var multiview = VisionSportsMultiview()
+  @StateObject private var multiview = VisionMultiviewSession()
   @State private var showMultiviewPicker = false
   @State private var selectedMultiviewIDs: Set<Int> = []
-  @State private var scheduledMultiviewChannels: [TVChannel] = []
+  @State private var scheduledMultiviewChannels: [VisionMultiviewItem] = []
 #endif
   // Shares the app-wide Route type so the detail column never mismatches path types on switch.
   @State private var path: [Route] = []
@@ -127,8 +127,8 @@ struct SportView: View {
     .padding(.vertical, 8)
   }
 
-  private var eligibleChannels: [TVChannel] {
-    model.channels.filter { VisionSportsMultiview.streamURL(for: $0) != nil }
+  private var eligibleChannels: [VisionMultiviewItem] {
+    model.channels.compactMap(VisionMultiviewItem.init(channel:))
   }
 
   private var multiviewPicker: some View {
@@ -137,7 +137,7 @@ struct SportView: View {
         Button {
           if selectedMultiviewIDs.contains(channel.id) {
             selectedMultiviewIDs.remove(channel.id)
-          } else if selectedMultiviewIDs.count < VisionSportsMultiview.limit {
+          } else if selectedMultiviewIDs.count < VisionMultiviewSession.limit {
             selectedMultiviewIDs.insert(channel.id)
           }
         } label: {
@@ -353,27 +353,61 @@ struct SportView_Previews: PreviewProvider {
 }
 
 #if os(visionOS)
+struct VisionMultiviewItem: Identifiable {
+  let id: Int
+  let title: String
+  let logo: String?
+  let url: URL
+  let makeManager: (@MainActor () -> PlayerManager)?
+
+  init?(channel: TVChannel) {
+    guard let url = Self.streamURL(channel.stream) else { return nil }
+    id = channel.id
+    title = channel.title
+    logo = channel.logo
+    self.url = url
+    makeManager = nil
+  }
+
+  init?(item: any PlayableItem, context: any AppContextProtocol) {
+    if let movie = item as? MediaItem, movie.type.lowercased() == "3d" { return nil }
+    guard let url = Self.streamURL(BestVideoQualityFinder.findBestURL(for: item.files)) else { return nil }
+    id = item.id
+    title = [item.playerTitle, item.playerSubtitle].compactMap { $0 }.joined(separator: " · ")
+    logo = nil
+    self.url = url
+    makeManager = {
+      PlayerManager(playItem: item, watchMode: .media,
+                    downloadedFilesDatabase: context.downloadedFilesDatabase, actionsService: context.actionsService)
+    }
+  }
+
+  private static func streamURL(_ stream: String) -> URL? {
+    guard let url = URL(string: stream), let scheme = url.scheme?.lowercased(),
+          ["https", "http"].contains(scheme), url.host != nil else { return nil }
+    return url
+  }
+}
+
 @MainActor
-private final class VisionSportsMultiview: ObservableObject, AVExperienceController.Delegate {
+final class VisionMultiviewSession: ObservableObject, AVExperienceController.Delegate {
   static let limit = 5
   @Published private(set) var activeIDs: [Int] = []
   @Published private(set) var audioID: Int?
   @Published private(set) var isChanging = false
   @Published var errorMessage: String?
 
+  private static weak var owner: VisionMultiviewSession?
   private var controllers: [Int: AVPlayerViewController] = [:]
+  private var managers: [Int: PlayerManager] = [:]
   private var itemObservations: [Int: NSKeyValueObservation] = [:]
   private var contentPicker: AVContentSelectionViewController?
   private var generation = 0
 
-  static func streamURL(for channel: TVChannel) -> URL? {
-    guard let url = URL(string: channel.stream), let scheme = url.scheme?.lowercased(),
-          ["https", "http"].contains(scheme), url.host != nil else { return nil }
-    return url
-  }
-
-  func start(_ channels: [TVChannel], available: [TVChannel]) async {
+  func start(_ channels: [VisionMultiviewItem], available: [VisionMultiviewItem]) async {
     guard !isChanging, controllers.isEmpty else { return }
+    if let owner = Self.owner, owner !== self { owner.stop() }
+    Self.owner = self
     isChanging = true
     errorMessage = nil
     let run = generation
@@ -391,7 +425,7 @@ private final class VisionSportsMultiview: ObservableObject, AVExperienceControl
     if activeIDs.isEmpty { clearPicker() }
   }
 
-  func toggle(_ channel: TVChannel) async {
+  func toggle(_ channel: VisionMultiviewItem) async {
     guard !isChanging else { return }
     isChanging = true
     let run = generation
@@ -431,20 +465,23 @@ private final class VisionSportsMultiview: ObservableObject, AVExperienceControl
     }
     itemObservations.removeAll()
     controllers.removeAll()
+    managers.removeAll()
     activeIDs.removeAll()
     audioID = nil
     clearPicker()
+    if Self.owner === self { Self.owner = nil }
   }
 
-  private func add(_ channel: TVChannel, generation run: Int) async {
-    guard controllers[channel.id] == nil, let url = Self.streamURL(for: channel) else { return }
-    let item = AVPlayerItem(url: url)
+  private func add(_ channel: VisionMultiviewItem, generation run: Int) async {
+    guard controllers[channel.id] == nil else { return }
+    let manager = channel.makeManager?()
+    let player = manager?.player ?? AVPlayer(url: channel.url)
+    guard let item = player.currentItem else { return }
     let title = AVMutableMetadataItem()
     title.identifier = .commonIdentifierTitle
     title.value = channel.title as NSString
     title.extendedLanguageTag = "und"
-    item.externalMetadata = [title]
-    let player = AVPlayer(playerItem: item)
+    if manager == nil { item.externalMetadata = [title] }
     player.isMuted = !activeIDs.isEmpty
     let controller = AVPlayerViewController()
     controller.player = player
@@ -467,6 +504,10 @@ private final class VisionSportsMultiview: ObservableObject, AVExperienceControl
       errorMessage = "Could not add \(channel.title) to Multiview."
       return
     }
+    if let manager {
+      managers[channel.id] = manager
+      manager.seekToContinueWatching()
+    }
     activeIDs.append(channel.id)
     if audioID == nil { listen(to: channel.id) }
     itemObservations[channel.id] = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -474,7 +515,7 @@ private final class VisionSportsMultiview: ObservableObject, AVExperienceControl
       Task { @MainActor in
         guard let self, self.generation == run, self.controllers[channel.id]?.player?.currentItem === item
         else { return }
-        self.errorMessage = "\(channel.title) could not play. Try a different channel."
+        self.errorMessage = "\(channel.title) could not play. Try a different video."
       }
     }
     player.play()
@@ -482,6 +523,7 @@ private final class VisionSportsMultiview: ObservableObject, AVExperienceControl
 
   private func remove(_ id: Int) {
     itemObservations[id] = nil
+    managers[id] = nil
     if let controller = controllers.removeValue(forKey: id) {
       controller.experienceController.delegate = nil
       controller.player?.pause()
@@ -509,7 +551,7 @@ private final class VisionSportsMultiview: ObservableObject, AVExperienceControl
   func experienceController(_ controller: AVExperienceController,
                             didChangeAvailableExperiences availableExperiences: AVExperienceController.Experiences) {}
 
-  private func installContentPicker(_ channels: [TVChannel]) {
+  private func installContentPicker(_ channels: [VisionMultiviewItem]) {
     let picker = AVContentSelectionViewController()
     picker.preferredContentSize = CGSize(width: 960, height: 240)
     let host = UIHostingController(rootView: VisionMultiviewChannelStrip(channels: channels, multiview: self))
@@ -536,12 +578,12 @@ private final class VisionSportsMultiview: ObservableObject, AVExperienceControl
 }
 
 private struct VisionMultiviewChannelStrip: View {
-  let channels: [TVChannel]
-  @ObservedObject var multiview: VisionSportsMultiview
+  let channels: [VisionMultiviewItem]
+  @ObservedObject var multiview: VisionMultiviewSession
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("KinoPub Live Channels").font(.headline)
+      Text(channels.contains { $0.makeManager != nil } ? "KinoPub Videos" : "KinoPub Live Channels").font(.headline)
       ScrollView(.horizontal) {
         HStack(spacing: 14) {
           ForEach(channels) { channel in
@@ -559,7 +601,7 @@ private struct VisionMultiviewChannelStrip: View {
                 }
                 .frame(width: 142)
               }
-              .disabled(multiview.isChanging || (!active && multiview.activeIDs.count >= VisionSportsMultiview.limit))
+              .disabled(multiview.isChanging || (!active && multiview.activeIDs.count >= VisionMultiviewSession.limit))
               .accessibilityAddTraits(active ? .isSelected : [])
               if active {
                 Button { multiview.listen(to: channel.id) } label: {

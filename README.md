@@ -23,9 +23,9 @@ Native **iOS · iPadOS · macOS** client for the [kino.pub](https://kino.pub) se
 
 ## Apple Vision Pro preview
 
-This fork adds a native visionOS app for Apple Vision Pro. It supports video quality selection in the system player and the 3D player, a floating video window, and stereo playback for side-by-side and top-and-bottom films. The system player supports Apple Environments for compatible video. Frame-packed 3D films play in KinoPub’s separate large window.
+This fork adds a native visionOS app for Apple Vision Pro. It supports video quality selection, a floating video window, Sports Multiview, and stereo playback for side-by-side and top-and-bottom films. Apple Cinema prepares a native stereo copy with original audio and English subtitles for Apple’s Environment player. The preparation step downloads the movie.
 
-[Download the visionOS preview](https://github.com/kirniy/kinopub-apple-client/releases/tag/visionos-build-10) · [Build and sign the visionOS app](VISIONOS-PREVIEW.md)
+[Download the visionOS preview](https://github.com/kirniy/kinopub-apple-client/releases/tag/visionos-build-13) · [Build and sign the visionOS app](VISIONOS-PREVIEW.md)
 
 ## Features
 
@@ -38,6 +38,33 @@ This fork adds a native visionOS app for Apple Vision Pro. It supports video qua
 - 🌍 16 UI languages
 
 ## Screenshots
+
+### Apple Vision Pro
+
+The cinema image is from a Vision Pro. The library and Sports images are from the visionOS Simulator with sample data and test feeds.
+
+<table>
+  <tr>
+    <td><img src="Screenshots/visionos/home.jpeg" width="450" alt="Home with the library sidebar"></td>
+    <td><img src="Screenshots/visionos/catalog.jpeg" width="450" alt="Movie catalog"></td>
+  </tr>
+  <tr>
+    <td><img src="Screenshots/visionos/history.jpeg" width="450" alt="Watch history"></td>
+    <td><img src="Screenshots/visionos/watching.jpeg" width="450" alt="Watching list"></td>
+  </tr>
+  <tr>
+    <td><img src="Screenshots/visionos/search.jpeg" width="450" alt="Search results"></td>
+    <td><img src="Screenshots/visionos/details.jpeg" width="450" alt="Movie details"></td>
+  </tr>
+  <tr>
+    <td><img src="Screenshots/visionos/credits.jpeg" width="450" alt="Cast and movie description"></td>
+    <td><img src="Screenshots/visionos/sports.jpeg" width="450" alt="Sports channel guide and inline player"></td>
+  </tr>
+  <tr>
+    <td><img src="Screenshots/visionos/sports-multiview.jpeg" width="450" alt="Sports Multiview with two test feeds"></td>
+    <td><img src="Screenshots/visionos/apple-environment.jpeg" width="450" alt="Native 3D test clip docked in an Apple Environment with English subtitles"></td>
+  </tr>
+</table>
 
 ### iPhone
 

@@ -73,77 +73,102 @@ struct VisionVideoRendition: Identifiable, Equatable {
   }
 }
 
+private enum VisionQualitySelection: Hashable {
+  case profile, automatic, rendition(CGSize)
+}
+
 struct VisionPlaybackQualityPanel: View {
   @ObservedObject var manager: PlayerManager
-  var observesPresentationSize = false
 
   var body: some View {
-    if observesPresentationSize, let item = manager.player.currentItem {
-      choices
-        .onReceive(item.publisher(for: \.presentationSize, options: [.initial, .new]).receive(on: RunLoop.main)) { size in
-          guard item === manager.player.currentItem else { return }
-          manager.updateVideoResolution(size)
-        }
-    } else {
-      choices
+    Form {
+      LabeledContent("Playing", value: resolution)
+      VisionQualityPicker(manager: manager)
+        .pickerStyle(.menu)
+        .disabled((manager.visionRenditions?.count ?? 0) < 2)
     }
+    .formStyle(.grouped)
+    .scrollContentBackground(.hidden)
+    .modifier(VisionQualityObservation(manager: manager, native: true))
   }
 
-  private var choices: some View {
-    VStack(spacing: 8) {
-      if manager.videoResolution != .zero {
-        Text("Playing \(VisionVideoRendition.label(for: manager.videoResolution))")
-          .font(.caption.monospacedDigit())
-      }
-      if let renditions = manager.visionRenditions {
-        if renditions.count > 1 {
-          ScrollView(.horizontal) {
-            HStack {
-              Button { manager.setVisionRendition(nil) } label: {
-                choiceLabel("Auto", selected: manager.selectedVisionRendition == nil && !manager.usesProfileQualityLimit)
-              }
-              ForEach(renditions) { rendition in
-                Button { manager.setVisionRendition(rendition) } label: {
-                  choiceLabel(rendition.title, selected: rendition == manager.selectedVisionRendition)
-                }
-              }
-            }
-          }
-          .defaultScrollAnchor(.center)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: 650)
-          Text(manager.usesProfileQualityLimit ? "Using your profile’s quality limit" : "Changes apply as the player loads more video.")
-            .font(.caption)
-        } else {
-          Text("No alternate video qualities available").font(.caption)
-        }
-      } else {
-        ProgressView("Checking available qualities")
-      }
-    }
-    .controlSize(.small)
-    .task { await manager.loadVisionRenditions() }
-  }
-
-  @ViewBuilder
-  private func choiceLabel(_ title: String, selected: Bool) -> some View {
-    if selected { Label(title, systemImage: "checkmark").accessibilityAddTraits(.isSelected) }
-    else { Text(title) }
+  private var resolution: String {
+    manager.videoResolution == .zero ? "Waiting for video" : VisionVideoRendition.label(for: manager.videoResolution)
   }
 }
 
 struct VisionPlaybackQualityButton: View {
   @ObservedObject var manager: PlayerManager
-  @State private var showsQuality = false
+  var observesPresentationSize = true
 
   var body: some View {
-    Button { showsQuality = true } label: {
+    Menu {
+      if manager.videoResolution != .zero {
+        Text("Playing \(VisionVideoRendition.label(for: manager.videoResolution))")
+      }
+      if let renditions = manager.visionRenditions {
+        if renditions.count > 1 {
+          VisionQualityPicker(manager: manager).pickerStyle(.inline)
+        } else {
+          Text("No alternate video qualities available")
+        }
+      } else {
+        Text("Checking available qualities")
+      }
+    } label: {
       Label("Quality", systemImage: "gauge.with.dots.needle.67percent")
     }
-    .popover(isPresented: $showsQuality, arrowEdge: .top) {
-      VisionPlaybackQualityPanel(manager: manager, observesPresentationSize: true)
-        .frame(minWidth: 300, idealWidth: 460)
-        .padding(20)
+    .modifier(VisionQualityObservation(manager: manager, native: observesPresentationSize))
+  }
+}
+
+private struct VisionQualityPicker: View {
+  @ObservedObject var manager: PlayerManager
+
+  private var selection: Binding<VisionQualitySelection> {
+    Binding {
+      if manager.usesProfileQualityLimit { return .profile }
+      if let chosen = manager.selectedVisionRendition { return .rendition(chosen.size) }
+      return .automatic
+    } set: { option in
+      switch option {
+      case .profile: manager.restoreVisionProfileQuality()
+      case .automatic: manager.setVisionRendition(nil)
+      case .rendition(let size):
+        if let rendition = manager.visionRenditions?.first(where: { $0.size == size }) {
+          manager.setVisionRendition(rendition)
+        }
+      }
+    }
+  }
+
+  var body: some View {
+    Picker("Quality", selection: selection) {
+      if StreamQuality.current != .auto {
+        Text("Use Profile (\(StreamQuality.current.title))").tag(VisionQualitySelection.profile)
+      }
+      Text("Auto").tag(VisionQualitySelection.automatic)
+      ForEach(manager.visionRenditions ?? []) { rendition in
+        Text(rendition.title).tag(VisionQualitySelection.rendition(rendition.size))
+      }
+    }
+  }
+}
+
+private struct VisionQualityObservation: ViewModifier {
+  let manager: PlayerManager
+  let native: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if native, let item = manager.player.currentItem {
+      content
+        .task { await manager.loadVisionRenditions() }
+        .onReceive(item.publisher(for: \.presentationSize, options: [.initial, .new]).receive(on: RunLoop.main)) { size in
+          if item === manager.player.currentItem { manager.updateVideoResolution(size) }
+        }
+    } else {
+      content.task { await manager.loadVisionRenditions() }
     }
   }
 }

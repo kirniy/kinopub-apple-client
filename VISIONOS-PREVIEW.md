@@ -17,6 +17,29 @@ Use Xcode 27 with the visionOS SDK installed.
 
 ## Select video quality
 
-Open **Quality** in the playback window or in the system player’s information tabs. The panel lists the resolutions in the current stream and shows the resolution in use. Select **Auto** to let the player choose. A selection takes effect as the player loads more video.
+Open the native **Quality** menu in the playback window or use the **Quality** tab in the system player. The panel lists the resolutions in the current stream and shows the resolution in use. Select **Auto** to let the player choose. A selection takes effect as the player loads more video.
 
-For compatible video, select **Watch in Apple Environment** in the system player. For frame-packed 3D video, select **Full Screen** in KinoPub to open the large 3D window.
+## Watch a 3D movie in an Apple Environment
+
+1. Play a title from the 3D section.
+2. Select **Apple Cinema** in the playback controls.
+3. Select **Prepare Movie**. Keep KinoPub open during the download and conversion. Preparation can take several minutes and needs free storage.
+4. Select **Open in Apple Player**.
+5. Open the system playback controls.
+6. Select **Watch in Apple Environment**.
+
+The prepared movie has a native stereo video track, the original audio track, and English subtitles. Use Apple’s timeline to seek. If KinoPub cannot identify the original audio or find full English subtitles, it reports the missing track. The app removes the temporary copy when you leave the movie.
+
+## Watch movies and episodes in Multiview
+
+1. Open **Profile**.
+2. Turn on **Multiview for Movies and Series**.
+3. Open a 2D movie or an episode.
+4. Select **Add to Multiview**. On an episode card, use its context menu.
+5. Add at least one more video.
+6. Open **Multiview** from the library controls.
+7. Select **Start Multiview**.
+
+Multiview supports up to five videos. Use **Listen** to choose which video plays audio.
+
+The [Cinema remux framework](Vendor/KinoCinemaRemux/README.md) includes its license and build instructions.

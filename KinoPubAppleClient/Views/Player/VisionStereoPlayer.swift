@@ -93,7 +93,18 @@ private struct VisionStereoPlaybackView: View {
 
   var body: some View {
     ZStack(alignment: .bottom) {
-      if layout == .native {
+      if manager.isCinemaPlaying {
+        VisionNativePlayer(player: manager.player)
+          .overlay(alignment: .topTrailing) {
+            Button {
+              Task { await manager.leaveAppleCinema() }
+            } label: {
+              Label("Back to 3D Player", systemImage: "arrow.uturn.backward")
+            }
+            .padding(12)
+            .offset(z: 60)
+          }
+      } else if layout == .native {
         VisionNativePlayer(player: manager.player, qualityManager: manager)
       } else {
         VisionStereoSurface(player: manager.player, layout: layout,
@@ -102,14 +113,14 @@ private struct VisionStereoPlaybackView: View {
                               if manager.detectedStereoLayout == nil { manager.detectedStereoLayout = result }
                             },
                             onResolution: manager.updateVideoResolution,
+                            onAlignment: { manager.stereoEyeOffset = $0 },
                             controlsVisible: manager.visionStereoControlsVisible,
-
                             onTap: {
                               if layout != .automatic { manager.visionStereoControlsVisible.toggle() }
                             })
           .id(layout)
       }
-      if manager.visionStereoControlsVisible || layout == .native {
+      if !manager.isCinemaPlaying && (manager.visionStereoControlsVisible || layout == .native) {
         VisionStereoControls(manager: manager, isFullscreen: isFullscreen, presentationAction: presentationAction)
           .padding(10)
           .background(.black.opacity(0.84), in: RoundedRectangle(cornerRadius: 20))
@@ -151,7 +162,7 @@ private struct VisionStereoPlaybackView: View {
 }
 
 private struct VisionStereoControls: View {
-  private enum Panel { case audio, subtitles, format, quality }
+  private enum Panel { case audio, subtitles, format, cinema }
 
   @ObservedObject var manager: PlayerManager
   let isFullscreen: Bool
@@ -187,7 +198,8 @@ private struct VisionStereoControls: View {
         }
         panelButton(.format, title: "3D Format", icon: "view.3d")
         if layout != .native {
-          panelButton(.quality, title: "Quality", icon: "gauge.with.dots.needle.67percent")
+          VisionPlaybackQualityButton(manager: manager, observesPresentationSize: false)
+          panelButton(.cinema, title: "Apple Cinema", icon: "mountain.2")
         }
         if isFullscreen {
           Button(action: presentationAction) {
@@ -265,12 +277,37 @@ private struct VisionStereoControls: View {
           }
         }
       }
-    case .quality:
-      VisionPlaybackQualityPanel(manager: manager)
+    case .cinema:
+      cinemaControls
     case .audio:
       trackChoices(audioGroup, empty: "No alternate audio tracks")
     case .subtitles:
       trackChoices(subtitleGroup, empty: "No subtitles available")
+    }
+  }
+
+  @ViewBuilder
+  private var cinemaControls: some View {
+    switch manager.cinemaPhase {
+    case .idle:
+      Text("Prepare a stereo copy for Apple’s cinema view. This downloads the movie and can take several minutes.")
+        .font(.caption)
+      Button("Prepare Movie", action: manager.prepareAppleCinema)
+        .disabled(layout == .automatic)
+    case .downloading(let progress), .converting(let progress):
+      let title = {
+        if case .downloading = manager.cinemaPhase { return "Downloading Movie" }
+        return "Converting to Native 3D"
+      }()
+      ProgressView(value: progress) { Text(title) }
+        .frame(maxWidth: 420)
+      Button("Cancel", action: manager.cancelAppleCinemaPreparation)
+    case .ready:
+      Text("Open the movie, then select Watch in Apple Environment in Apple’s player.").font(.caption)
+      Button("Open in Apple Player") { Task { await manager.openAppleCinema() } }
+    case .failed(let reason):
+      Text(reason).font(.caption)
+      Button("Try Again", action: manager.prepareAppleCinema)
     }
   }
 
@@ -311,6 +348,7 @@ private struct VisionStereoControls: View {
   private func select(_ option: AVMediaSelectionOption?, in group: AVMediaSelectionGroup) {
     guard let item = manager.player.currentItem else { return }
     item.select(option, in: group)
+    if group === audioGroup, let option { manager.rememberCinemaAudio(option) }
     selectedMedia = item.currentMediaSelection
     panel = nil
   }
@@ -343,6 +381,7 @@ private struct VisionStereoSurface: View {
   let autoDetect: Bool
   let onDetected: (VisionStereoLayout) -> Void
   let onResolution: (CGSize) -> Void
+  let onAlignment: (Double) -> Void
   let controlsVisible: Bool
 
   let onTap: () -> Void
@@ -404,7 +443,7 @@ private struct VisionStereoSurface: View {
     }
     .task {
       frames.start(item: player.currentItem, layout: layout, onDetected: autoDetect ? onDetected : nil,
-                   onResolution: onResolution)
+                   onResolution: onResolution, onAlignment: onAlignment)
     }
     .onChange(of: autoDetect) { _, enabled in
       frames.setDetection(enabled ? onDetected : nil)
@@ -435,14 +474,16 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
   private var onDetected: ((VisionStereoLayout) -> Void)?
   private var rightEyeOffset = 0.0
   private var onResolution: ((CGSize) -> Void)?
+  private var onAlignment: ((Double) -> Void)?
 
   func start(item: AVPlayerItem?, layout: VisionStereoLayout, onDetected: ((VisionStereoLayout) -> Void)?,
-             onResolution: @escaping (CGSize) -> Void) {
+             onResolution: @escaping (CGSize) -> Void, onAlignment: @escaping (Double) -> Void) {
     stop()
     guard let item else { return }
     self.item = item
     self.layout = layout
     self.onResolution = onResolution
+    self.onAlignment = onAlignment
     setDetection(onDetected)
     let video = AVPlayerItemVideoOutput()
     let text = AVPlayerItemLegibleOutput()
@@ -472,6 +513,7 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     splitter = nil
     frameSize = .zero
     onResolution = nil
+    onAlignment = nil
     detector = nil
     onDetected = nil
     rightEyeOffset = 0
@@ -495,6 +537,7 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     }
     if let result = detector?.observe(frame, at: link.timestamp, layoutHint: layout == .automatic ? nil : layout) {
       rightEyeOffset = detector?.verticalOffset ?? 0
+      onAlignment?(rightEyeOffset)
       onDetected?(result)
     }
     if detector?.isFinished == true {
@@ -546,7 +589,7 @@ struct VisionStereoFrameSplitter {
   }
 
   mutating func sample(from frame: CVPixelBuffer, layout: VisionStereoLayout, time: CMTime,
-                       rightEyeOffset: Double = 0) -> CMSampleBuffer? {
+                       rightEyeOffset: Double = 0, output: CGSize? = nil) -> CMSampleBuffer? {
     let frameWidth = CVPixelBufferGetWidth(frame)
     let frameHeight = CVPixelBufferGetHeight(frame)
     let stacked = layout == .topAndBottom
@@ -556,7 +599,7 @@ struct VisionStereoFrameSplitter {
     let width = eyeWidth & ~1
     let height = eyeHeight & ~1
     guard width > 0, height > 0 else { return nil }
-    let size = CGSize(width: width, height: height)
+    let size = output ?? CGSize(width: width, height: height)
     let transferFunction = CVBufferCopyAttachment(frame, kCVImageBufferTransferFunctionKey, nil) as? String
     let sourceFormat = CVPixelBufferGetPixelFormatType(frame)
     let hdr = transferFunction == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
@@ -567,8 +610,8 @@ struct VisionStereoFrameSplitter {
       : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
     if pool == nil || size != outputSize || targetFormat != pixelFormat {
       let attributes: [String: Any] = [
-        kCVPixelBufferWidthKey as String: width,
-        kCVPixelBufferHeightKey as String: height,
+        kCVPixelBufferWidthKey as String: Int(size.width),
+        kCVPixelBufferHeightKey as String: Int(size.height),
         kCVPixelBufferPixelFormatTypeKey as String: targetFormat,
         kCVPixelBufferIOSurfacePropertiesKey as String: [String: String]()
       ]

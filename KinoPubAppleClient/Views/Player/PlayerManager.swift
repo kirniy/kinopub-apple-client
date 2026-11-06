@@ -14,6 +14,9 @@ import AVFoundation
 import CoreImage
 import KinoPubLogging
 import OSLog
+#if os(visionOS)
+import VideoToolbox
+#endif
 
 /// How a stereoscopic (3D) source is shown on a flat screen. True stereo can't be output on
 /// iPhone/iPad/Mac, so the choices are: pick one eye (normal 2D) or red-cyan anaglyph (for glasses).
@@ -116,6 +119,159 @@ class PlayerManager: ObservableObject {
   @Published private(set) var videoResolution: CGSize = .zero
   @Published private(set) var usesProfileQualityLimit = StreamQuality.current != .auto
 
+  enum CinemaPhase {
+    case idle, downloading(Double), converting(Double), ready, failed(String)
+
+    var isPreparing: Bool {
+      switch self {
+      case .downloading, .converting: true
+      default: false
+      }
+    }
+  }
+
+  @Published private(set) var cinemaPhase: CinemaPhase = .idle
+  @Published private(set) var isCinemaPlaying = false
+  private var cinemaTask: Task<Void, Never>?
+  private var cinemaJobID: UUID?
+  private var cinemaFile: URL?
+  private var cinemaOriginalItem: AVPlayerItem?
+  private var cinemaAudioChoice: (name: String, language: String?)?
+  var stereoEyeOffset = 0.0
+
+  @MainActor
+  func prepareAppleCinema() {
+    let layout = resolvedStereoLayout
+    guard !cinemaPhase.isPreparing, layout == .sideBySide || layout == .topAndBottom else { return }
+    guard let url = URL(string: BestVideoQualityFinder.findBestURL(for: playItem.files)),
+          url.scheme == "https" || url.scheme == "http" else {
+      cinemaPhase = .failed(VisionCinemaError.unsupportedStream.localizedDescription)
+      return
+    }
+    let id = UUID()
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("KinoPubCinema-\(id)", isDirectory: true)
+    let resolution = player.currentItem?.preferredMaximumResolution ?? .zero
+    let size = resolution == .zero ? CGSize(width: 1920, height: 1080) : resolution
+    let eyeOffset = stereoEyeOffset
+    cinemaJobID = id
+    cinemaPhase = .downloading(0)
+    let update: @Sendable (CinemaPhase) async -> Void = { [weak self] phase in
+      await MainActor.run { [weak self] in
+        guard let self, self.cinemaJobID == id else { return }
+        self.cinemaPhase = phase
+      }
+    }
+    cinemaTask = Task { [weak self] in
+      guard let source = await self?.makeCinemaSource(url: url, size: size), !Task.isCancelled else { return }
+      let worker = Task.detached(priority: .userInitiated) {
+        guard VTIsStereoMVHEVCEncodeSupported() else { throw VisionCinemaError.unsupportedDevice }
+        let destination = directory.appendingPathComponent("Movie.mp4")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var prepared = false
+        defer { if !prepared { try? FileManager.default.removeItem(at: directory) } }
+        let material = try await source.download(to: directory) { await update(.downloading($0)) }
+        try await VisionCinemaEncoder.encode(material, layout: layout, eyeOffset: eyeOffset, to: destination) {
+          await update(.converting($0))
+        }
+        try Task.checkCancellation()
+        try? FileManager.default.removeItem(at: material.video)
+        if let audio = material.audio { try? FileManager.default.removeItem(at: audio) }
+        prepared = true
+        return destination
+      }
+      do {
+        let movie = try await withTaskCancellationHandler(operation: { try await worker.value },
+                                                          onCancel: { worker.cancel() })
+        guard let self, self.cinemaJobID == id, !Task.isCancelled else {
+          try? FileManager.default.removeItem(at: directory)
+          return
+        }
+        self.cinemaFile = movie
+        self.cinemaPhase = .ready
+        self.cinemaTask = nil
+      } catch {
+        guard let self, self.cinemaJobID == id, !Task.isCancelled else { return }
+        let reason = (error as? VisionCinemaError)
+          ?? ((error as? CocoaError)?.code == .fileWriteOutOfSpace ? .storage : .conversion)
+        self.cinemaPhase = .failed(reason.localizedDescription)
+        self.cinemaTask = nil
+      }
+    }
+  }
+
+  func cancelAppleCinemaPreparation() {
+    cinemaJobID = nil
+    cinemaTask?.cancel()
+    cinemaTask = nil
+    if let cinemaFile { try? FileManager.default.removeItem(at: cinemaFile.deletingLastPathComponent()) }
+    cinemaFile = nil
+    cinemaPhase = .idle
+  }
+
+  @MainActor
+  func openAppleCinema() async {
+    guard let cinemaFile, let previous = player.currentItem, !isCinemaPlaying else { return }
+    let time = player.currentTime()
+    cinemaOriginalItem = previous
+    player.pause()
+    let item = AVPlayerItem(url: cinemaFile)
+    item.externalMetadata = externalMetadata()
+    player.replaceCurrentItem(with: item)
+    bindPlaybackItem(item, applySelection: false)
+    isCinemaPlaying = true
+    await applyVisionMediaSelection(to: item)
+    guard player.currentItem === item else { return }
+    if time.isNumeric { await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
+    if player.currentItem === item { player.play() }
+  }
+
+  @MainActor
+  func leaveAppleCinema() async {
+    guard let original = cinemaOriginalItem else { return }
+    let time = player.currentTime()
+    player.pause()
+    player.replaceCurrentItem(with: original)
+    bindPlaybackItem(original, applySelection: false)
+    cinemaOriginalItem = nil
+    isCinemaPlaying = false
+    if time.isNumeric { await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
+    if player.currentItem === original { player.play() }
+  }
+
+  func rememberCinemaAudio(_ option: AVMediaSelectionOption) {
+    let name = Self.renditionName(option) ?? option.displayName
+    guard !Self.isDubAudioLabel(name) else { return }
+    cinemaAudioChoice = (name, Self.optionLanguage(option))
+  }
+
+  @MainActor
+  private func makeCinemaSource(url: URL, size: CGSize) async -> VisionCinemaSource {
+    let currentGroup = try? await player.currentItem?.asset.loadMediaSelectionGroup(for: .audible)
+    let preferred = currentGroup.flatMap { originalAudioOption(in: $0.options) }
+    let tracks = audioTrackMetadata()
+    let originalLanguages = Set(tracks.filter { Self.isOriginalAudioLabel($0.label) }.map(\.language))
+    let dubbedLanguages = Set(Dictionary(grouping: tracks, by: \.language).compactMap { language, tracks in
+      tracks.allSatisfy { Self.isDubAudioLabel($0.label) } ? language : nil
+    })
+    let audio = VisionCinemaSource.Audio(
+      name: preferred.map { Self.renditionName($0) ?? $0.displayName } ?? cinemaAudioChoice?.name,
+      language: preferred.flatMap(Self.optionLanguage) ?? cinemaAudioChoice?.language,
+      originalLanguages: originalLanguages, dubbedLanguages: dubbedLanguages
+    )
+    let subtitle = activeMovieVideo?.subtitles.first {
+      Self.languageCode($0.lang) == "en" && $0.forced != true
+    }.flatMap { subtitle -> VisionCinemaSource.Subtitle? in
+      guard let url = URL(string: subtitle.url), url.scheme == "https" || url.scheme == "http" else { return nil }
+      return .init(url: url, shift: Double(subtitle.shift) / 1_000)
+    }
+    return VisionCinemaSource(url: url, maxSize: size, audio: audio, subtitle: subtitle)
+  }
+
+  private var activeMovieVideo: Video? {
+    let videos = (playItem as? MediaItem)?.videos
+    return videos?.first(where: { $0.number == playItem.metadata.video }) ?? videos?.first
+  }
+
   private var stereoLayoutKey: String {
     "visionStereoLayout.\(playItem.metadata.id).\(playItem.metadata.season ?? 0).\(playItem.metadata.video ?? 0)"
   }
@@ -125,6 +281,10 @@ class PlayerManager: ObservableObject {
   }
 
   func setVisionStereoLayout(_ layout: VisionStereoLayout) {
+    if layout != visionStereoLayout || layout == .automatic {
+      cancelAppleCinemaPreparation()
+      stereoEyeOffset = 0
+    }
     if layout == .automatic {
       detectedStereoLayout = nil
       UserDefaults.standard.removeObject(forKey: stereoLayoutKey)
@@ -161,6 +321,14 @@ class PlayerManager: ObservableObject {
     selectedVisionRendition = rendition
     item.preferredMaximumResolution = rendition?.size ?? .zero
     item.preferredPeakBitRate = rendition?.peakBitRate ?? 0
+  }
+
+  func restoreVisionProfileQuality() {
+    setVisionRendition(nil)
+    if let limit = StreamQuality.current.maxResolution {
+      player.currentItem?.preferredMaximumResolution = limit
+      usesProfileQualityLimit = true
+    }
   }
 
   func updateVideoResolution(_ size: CGSize) {
@@ -325,12 +493,32 @@ class PlayerManager: ObservableObject {
       }
     }
 
+    bindPlaybackItem(player.currentItem)
+    playerTimeObserver = PlayerTimeObserver(player: player, period: 10.0, timeUpdateHandler: { [weak self] time in
+      self?.saveWatchMark(time: time)
+#if !os(visionOS)
+      Task { @MainActor in await self?.captureCurrentAudio() }
+#endif
+    })
+
+  }
+
+  private func bindPlaybackItem(_ currentItem: AVPlayerItem?, applySelection: Bool = true) {
+    audioObservation?.invalidate()
+    audioObservation = nil
+    failureObservation?.invalidate()
+    failureObservation = nil
+    if let endOfPlaybackObserver { NotificationCenter.default.removeObserver(endOfPlaybackObserver) }
+    endOfPlaybackObserver = nil
+    guard let currentItem else { return }
+
     // Apply the initial track selection once the media is ready.
-    if watchMode == .media {
-      audioObservation = player.currentItem?.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
+    if watchMode == .media, applySelection {
+      audioObservation = currentItem.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
         guard item.status == .readyToPlay else { return }
         Task { @MainActor in
-          guard let self, let observation = self.audioObservation else { return }
+          guard let self, self.player.currentItem === item,
+                let observation = self.audioObservation else { return }
           observation.invalidate()
           self.audioObservation = nil
 #if os(visionOS)
@@ -344,28 +532,28 @@ class PlayerManager: ObservableObject {
 
     // Surface the exact reason the native player shows the "crossed-out play" (item failed to load),
     // so an unplayable stream is diagnosable on-device instead of failing silently.
-    failureObservation = player.currentItem?.observe(\.status, options: [.new]) { [weak self] item, _ in
+    failureObservation = currentItem.observe(\.status, options: [.new]) { [weak self] item, _ in
       guard item.status == .failed else { return }
-      DispatchQueue.main.async { self?.reportPlaybackFailure(item) }
+      DispatchQueue.main.async {
+        guard let self, self.player.currentItem === item else { return }
+        self.reportPlaybackFailure(item)
+      }
     }
-
-    playerTimeObserver = PlayerTimeObserver(player: player, period: 10.0, timeUpdateHandler: { [weak self] time in
-      self?.saveWatchMark(time: time)
-#if !os(visionOS)
-      Task { @MainActor in await self?.captureCurrentAudio() }
-#endif
-    })
 
     // Playing to the very end marks the title watched (see `markFinished`).
     if watchMode == .media {
       endOfPlaybackObserver = NotificationCenter.default.addObserver(
-        forName: .AVPlayerItemDidPlayToEndTime, object: player.currentItem, queue: .main) { [weak self] _ in
+        forName: .AVPlayerItemDidPlayToEndTime, object: currentItem, queue: .main) { [weak self] _ in
           self?.markFinished()
       }
     }
   }
 
   deinit {
+#if os(visionOS)
+    cinemaTask?.cancel()
+    if let cinemaFile { try? FileManager.default.removeItem(at: cinemaFile.deletingLastPathComponent()) }
+#endif
     if let endOfPlaybackObserver { NotificationCenter.default.removeObserver(endOfPlaybackObserver) }
   }
 
@@ -450,9 +638,7 @@ class PlayerManager: ObservableObject {
                                                 track.author?.title, track.author?.shortTitle])
       }
     }
-    guard let item = playItem as? MediaItem else { return [] }
-    let video = item.videos?.first(where: { $0.number == playItem.metadata.video }) ?? item.videos?.first
-    return (video?.audios ?? []).compactMap { track in
+    return (activeMovieVideo?.audios ?? []).compactMap { track in
       Self.trackMetadata(track.lang, labels: [track.type?.title, track.type?.shortTitle,
                                               track.author?.title, track.author?.shortTitle])
     }
@@ -478,12 +664,12 @@ class PlayerManager: ObservableObject {
     languageCode(option.extendedLanguageTag ?? option.locale?.identifier)
   }
 
-  private static func isOriginalAudioLabel(_ label: String) -> Bool {
+  static func isOriginalAudioLabel(_ label: String) -> Bool {
     let markers = ["original", "оригинал", "原声", "原音", "オリジナル"]
     return markers.contains(where: label.lowercased().contains)
   }
 
-  private static func isDubAudioLabel(_ label: String) -> Bool {
+  static func isDubAudioLabel(_ label: String) -> Bool {
     let name = label.lowercased()
     let markers = ["дубляж", "дублирован", "одноголос", "двухголос", "многоголос",
                    "закадров", "voice-over", "voiceover", "voice over"]
@@ -491,7 +677,7 @@ class PlayerManager: ObservableObject {
     return name.range(of: #"\bdub(?:bed|bing)?\b"#, options: .regularExpression) != nil
   }
 
-  private static func languageCode(_ tag: String?) -> String? {
+  static func languageCode(_ tag: String?) -> String? {
     guard let tag, !tag.isEmpty else { return nil }
     let canonical = Locale.canonicalLanguageIdentifier(from: tag)
     guard let code = Locale.Language(identifier: canonical).languageCode?.identifier,

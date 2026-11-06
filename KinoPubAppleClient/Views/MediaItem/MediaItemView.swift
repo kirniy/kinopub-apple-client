@@ -21,6 +21,10 @@ struct MediaItemView: View {
 #if os(iOS)
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 #endif
+#if os(visionOS)
+  @EnvironmentObject private var catalogMultiview: VisionCatalogMultiview
+  @AppStorage(VisionCatalogMultiview.preferenceKey) private var catalogMultiviewEnabled = false
+#endif
   @StateObject private var itemModel: MediaItemModel
 
   @State private var plotExpanded: Bool = false
@@ -298,12 +302,34 @@ struct MediaItemView: View {
     }
     bookmarkMenu
     downloadButton
+#if os(visionOS)
+    if catalogMultiviewEnabled {
+      if mediaItem.isSeries, let episode = seriesPlayEpisode { multiviewButton(for: episode) }
+      else if !mediaItem.isSeries { multiviewButton(for: mediaItem) }
+    }
+#endif
     if FeatureFlags.threeDEnabled, mediaItem.type.lowercased() == "3d" {
       threeDModeButton
     }
     // Trailer button removed from the hero — the Trailers shelf below already exposes it.
     // Like/dislike moved next to the ratings (see `voteControl`).
   }
+
+#if os(visionOS)
+  @ViewBuilder
+  private func multiviewButton(for item: any PlayableItem) -> some View {
+    if let entry = VisionMultiviewItem(item: item, context: appContext) {
+      let isAdded = catalogMultiview.contains(entry.id)
+      Button {
+        catalogMultiview.toggle(entry)
+      } label: {
+        Label(isAdded ? "Remove from Multiview" : "Add to Multiview",
+              systemImage: isAdded ? "checkmark.rectangle" : "rectangle.split.2x2")
+      }
+      .disabled(!isAdded && catalogMultiview.items.count >= VisionMultiviewSession.limit)
+    }
+  }
+#endif
 
   /// 3D view-mode picker for 3D titles (Side-by-Side / Over-Under × 2D / Anaglyph). Writes the
   /// shared preference the player reads — on a flat screen true stereo can't be shown, so it's either
@@ -750,6 +776,9 @@ struct MediaItemView: View {
                           systemImage: watched ? "eye.fill" : "eye")
                   }
                   episodeDownloadMenu(episode, in: season)
+#if os(visionOS)
+                  if catalogMultiviewEnabled { multiviewButton(for: filledEpisode(episode, in: season)) }
+#endif
                 } preview: {
                   // Custom preview: the default lift clips the card's rounded bottom corners (over the
                   // text). Render the card on its own padded platter so nothing is cut off.
