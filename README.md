@@ -41,7 +41,7 @@ This fork adds a native visionOS app for Apple Vision Pro. It supports an attach
 
 ### Apple Vision Pro
 
-The cinema image is from a Vision Pro. The library and Sports images are from the visionOS Simulator with sample data and test feeds.
+All Apple Vision Pro screenshots are from the visionOS Simulator. The app uses sample catalog data for the gallery.
 
 <table>
   <tr>
@@ -58,13 +58,22 @@ The cinema image is from a Vision Pro. The library and Sports images are from th
   </tr>
   <tr>
     <td><img src="Screenshots/visionos/credits.jpeg" width="450" alt="Cast and movie description"></td>
-    <td><img src="Screenshots/visionos/sports.jpeg" width="450" alt="Sports channel guide and inline player"></td>
+    <td><img src="Screenshots/visionos/playback-languages.jpeg" width="450" alt="Playback language settings"></td>
   </tr>
   <tr>
-    <td><img src="Screenshots/visionos/sports-multiview.jpeg" width="450" alt="Sports Multiview with two test feeds"></td>
-    <td><img src="Screenshots/visionos/apple-environment.jpeg" width="450" alt="Native 3D test clip docked in an Apple Environment with English subtitles"></td>
+    <td colspan="2"><img src="Screenshots/visionos/sports-multiview.jpeg" width="900" alt="Sports Multiview playing football, basketball, and tennis"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="Screenshots/visionos/sports.jpeg" width="900" alt="Sports channel guide and inline player"></td>
   </tr>
 </table>
+
+Sports and Multiview play recorded match footage for this demo:
+
+- [Football](https://commons.wikimedia.org/wiki/File:Amateurfu%C3%9Fball_Torschuss_von_oben.webm) by Maximilian Schönherr and [tennis](https://commons.wikimedia.org/wiki/File:Carlos_Alcaraz_vs._Wu_Yibing_%282026_US_Open%29_-_20.webm) by Oleg Yunakov ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)).
+- [Basketball](https://commons.wikimedia.org/wiki/File:Basketpass.webm) by Benoît Prieur ([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)).
+
+The screenshots show resized frames from the clips. The two Sports screenshots are available under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
 ### iPhone
 
