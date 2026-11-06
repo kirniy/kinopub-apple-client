@@ -23,9 +23,9 @@ Native **iOS · iPadOS · macOS** client for the [kino.pub](https://kino.pub) se
 
 ## Apple Vision Pro preview
 
-This fork adds a native visionOS app for Apple Vision Pro. It supports video quality selection, a floating video window, Sports Multiview, and stereo playback for side-by-side and top-and-bottom films. Apple Cinema prepares a native stereo copy with original audio and English subtitles for Apple’s Environment player. The preparation step downloads the movie.
+This fork adds a native visionOS app for Apple Vision Pro. It supports an attached glass library rail, video quality selection, a floating video window, Sports Multiview, and stereo playback for side-by-side and top-and-bottom films. Apple Cinema prepares a native stereo copy for Apple’s Environment player, with your playback language preferences. The preparation step downloads the movie.
 
-[Download the visionOS preview](https://github.com/kirniy/kinopub-apple-client/releases/tag/visionos-build-13) · [Build and sign the visionOS app](VISIONOS-PREVIEW.md)
+[Download the visionOS preview](https://github.com/kirniy/kinopub-apple-client/releases/tag/visionos-build-14) · [Build and sign the visionOS app](VISIONOS-PREVIEW.md)
 
 ## Features
 
@@ -46,7 +46,7 @@ The cinema image is from a Vision Pro. The library and Sports images are from th
 <table>
   <tr>
     <td><img src="Screenshots/visionos/home.jpeg" width="450" alt="Home with the library sidebar"></td>
-    <td><img src="Screenshots/visionos/catalog.jpeg" width="450" alt="Movie catalog"></td>
+    <td><img src="Screenshots/visionos/spatial-library.jpeg" width="450" alt="Movie catalog with the floating library rail"></td>
   </tr>
   <tr>
     <td><img src="Screenshots/visionos/history.jpeg" width="450" alt="Watch history"></td>

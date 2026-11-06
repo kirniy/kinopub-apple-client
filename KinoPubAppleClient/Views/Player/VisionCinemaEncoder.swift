@@ -67,7 +67,8 @@ enum VisionCinemaEncoder {
     let audio = AVURLAsset(url: source.audio ?? source.video)
     guard let videoTrack = try await video.loadTracks(withMediaType: .video).first else { throw VisionCinemaError.conversion }
     let audioTracks = try await audio.loadTracks(withMediaType: .audio)
-    let audioTrack = try await originalTrack(audioTracks, preferredLanguage: source.audioLanguage, separate: source.audio != nil)
+    let audioTrack = try await selectedAudioTrack(audioTracks, preferredLanguage: source.audioLanguage,
+                                                  separate: source.audio != nil, allowDefault: source.allowDefaultAudio)
     let videoDuration = try await videoTrack.load(.timeRange).duration.seconds
     let audioDuration = try await audioTrack.load(.timeRange).duration.seconds
     guard videoDuration.isFinite, abs(videoDuration - source.duration) < 2.0,
@@ -122,14 +123,21 @@ enum VisionCinemaEncoder {
     let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: format)
     let languageTag = try await audioTrack.load(.extendedLanguageTag)
     audioInput.extendedLanguageTag = source.audioLanguage ?? languageTag
-    let subtitleFormat = try captionFormat()
-    let textInput = AVAssetWriterInput(mediaType: .subtitle, outputSettings: nil, sourceFormatHint: subtitleFormat)
-    textInput.extendedLanguageTag = "en"
+    let subtitleInput: (AVAssetWriterInput, CMFormatDescription)?
+    if let language = source.subtitleLanguage {
+      let format = try captionFormat()
+      let input = AVAssetWriterInput(mediaType: .subtitle, outputSettings: nil, sourceFormatHint: format)
+      input.extendedLanguageTag = language
+      subtitleInput = (input, format)
+    } else {
+      subtitleInput = nil
+    }
     let adaptor = AVAssetWriterInputTaggedPixelBufferGroupAdaptor(assetWriterInput: videoInput,
       sourcePixelBufferAttributes: pixelAttributes.merging([
         kCVPixelBufferWidthKey as String: Int(output.width), kCVPixelBufferHeightKey as String: Int(output.height)
       ], uniquingKeysWith: { _, new in new }))
-    for input in [videoInput, audioInput, textInput] {
+    let inputs = [videoInput, audioInput] + [subtitleInput?.0].compactMap { $0 }
+    for input in inputs {
       guard writer.canAdd(input) else { throw VisionCinemaError.conversion }
       writer.add(input)
     }
@@ -156,14 +164,16 @@ enum VisionCinemaEncoder {
         guard count > 0, audioReader.status != .failed else { throw VisionCinemaError.conversion }
         audioInput.markAsFinished()
       }
-      group.addTask {
-        let cues = captionTimeline(source.captions, duration: videoDuration)
-        guard cues.contains(where: { !$0.text.isEmpty }) else { throw VisionCinemaError.englishSubtitles }
-        for cue in cues {
-          try await wait(for: textInput, writer: writer)
-          guard textInput.append(try captionSample(cue, format: subtitleFormat)) else { throw VisionCinemaError.conversion }
+      if let (input, format) = subtitleInput {
+        group.addTask {
+          let cues = captionTimeline(source.captions, duration: videoDuration)
+          guard cues.contains(where: { !$0.text.isEmpty }) else { throw VisionCinemaError.subtitlesUnavailable }
+          for cue in cues {
+            try await wait(for: input, writer: writer)
+            guard input.append(try captionSample(cue, format: format)) else { throw VisionCinemaError.conversion }
+          }
+          input.markAsFinished()
         }
-        textInput.markAsFinished()
       }
       group.addTask {
         guard var splitter = VisionStereoFrameSplitter() else { throw VisionCinemaError.conversion }
@@ -198,14 +208,18 @@ enum VisionCinemaEncoder {
     async let captions = movie.loadMediaSelectionGroup(for: .legible)
     async let duration = movie.load(.duration)
     guard try await stereo.count == 1, try await sound.count == 1,
-          try await captions?.options.contains(where: {
-            PlayerManager.languageCode($0.extendedLanguageTag) == "en" && !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles)
-          }) == true, try await abs(duration.seconds - videoDuration) < 0.5 else { throw VisionCinemaError.conversion }
+          try await abs(duration.seconds - videoDuration) < 0.5 else { throw VisionCinemaError.conversion }
+    if let language = source.subtitleLanguage {
+      guard try await captions?.options.contains(where: {
+        PlayerManager.languageCode($0.extendedLanguageTag) == language &&
+        !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles)
+      }) == true else { throw VisionCinemaError.conversion }
+    }
     completed = true
   }
 
-  private static func originalTrack(_ tracks: [AVAssetTrack], preferredLanguage: String?,
-                                    separate: Bool) async throws -> AVAssetTrack {
+  private static func selectedAudioTrack(_ tracks: [AVAssetTrack], preferredLanguage: String?,
+                                         separate: Bool, allowDefault: Bool) async throws -> AVAssetTrack {
     if separate && tracks.count == 1 { return tracks[0] }
     if let preferredLanguage {
       var matching: [AVAssetTrack] = []
@@ -216,7 +230,7 @@ enum VisionCinemaEncoder {
       }
       if matching.count == 1 { return matching[0] }
     }
-    if preferredLanguage == nil && tracks.count == 1 { return tracks[0] }
+    if let first = tracks.first, allowDefault || (preferredLanguage == nil && tracks.count == 1) { return first }
     throw VisionCinemaError.originalAudio
   }
 
@@ -273,7 +287,7 @@ enum VisionCinemaEncoder {
 
   private static func captionSample(_ cue: VisionCinemaCue, format: CMFormatDescription) throws -> CMSampleBuffer {
     let text = Array(cue.text.utf8)
-    guard text.count <= Int(UInt16.max) else { throw VisionCinemaError.englishSubtitles }
+    guard text.count <= Int(UInt16.max) else { throw VisionCinemaError.subtitlesUnavailable }
     let data = [UInt8(text.count >> 8), UInt8(text.count & 255)] + text
     var block: CMBlockBuffer?
     guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: data.count,

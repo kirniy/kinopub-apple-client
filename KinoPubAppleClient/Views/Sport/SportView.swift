@@ -396,6 +396,8 @@ final class VisionMultiviewSession: ObservableObject, AVExperienceController.Del
   @Published private(set) var audioID: Int?
   @Published private(set) var isChanging = false
   @Published var errorMessage: String?
+  @Published private(set) var availableItems: [VisionMultiviewItem] = []
+  private(set) var catalogContext: (any AppContextProtocol)?
 
   private static weak var owner: VisionMultiviewSession?
   private var controllers: [Int: AVPlayerViewController] = [:]
@@ -404,14 +406,17 @@ final class VisionMultiviewSession: ObservableObject, AVExperienceController.Del
   private var contentPicker: AVContentSelectionViewController?
   private var generation = 0
 
-  func start(_ channels: [VisionMultiviewItem], available: [VisionMultiviewItem]) async {
+  func start(_ channels: [VisionMultiviewItem], available: [VisionMultiviewItem],
+             catalog: (any AppContextProtocol)? = nil) async {
     guard !isChanging, controllers.isEmpty else { return }
     if let owner = Self.owner, owner !== self { owner.stop() }
     Self.owner = self
     isChanging = true
     errorMessage = nil
     let run = generation
-    installContentPicker(available)
+    availableItems = available
+    catalogContext = catalog
+    installContentPicker()
     let session = AVAudioSession.sharedInstance()
     try? session.setCategory(.playback, mode: .moviePlayback)
     try? session.setIntendedSpatialExperience(.headTracked(soundStageSize: .large, anchoringStrategy: .automatic))
@@ -436,6 +441,9 @@ final class VisionMultiviewSession: ObservableObject, AVExperienceController.Del
       }
     }
     errorMessage = nil
+    if !availableItems.contains(where: { $0.id == channel.id }) {
+      availableItems.append(channel)
+    }
     if let controller = controllers[channel.id] {
       let result = await controller.experienceController.transition(to: .embedded)
       guard generation == run else { return }
@@ -467,8 +475,10 @@ final class VisionMultiviewSession: ObservableObject, AVExperienceController.Del
     controllers.removeAll()
     managers.removeAll()
     activeIDs.removeAll()
+    availableItems.removeAll()
     audioID = nil
     clearPicker()
+    catalogContext = nil
     if Self.owner === self { Self.owner = nil }
   }
 
@@ -551,10 +561,10 @@ final class VisionMultiviewSession: ObservableObject, AVExperienceController.Del
   func experienceController(_ controller: AVExperienceController,
                             didChangeAvailableExperiences availableExperiences: AVExperienceController.Experiences) {}
 
-  private func installContentPicker(_ channels: [VisionMultiviewItem]) {
+  private func installContentPicker() {
     let picker = AVContentSelectionViewController()
-    picker.preferredContentSize = CGSize(width: 960, height: 240)
-    let host = UIHostingController(rootView: VisionMultiviewChannelStrip(channels: channels, multiview: self))
+    picker.preferredContentSize = CGSize(width: 960, height: catalogContext == nil ? 240 : 420)
+    let host = UIHostingController(rootView: VisionMultiviewChannelStrip(multiview: self))
     picker.addChild(host)
     picker.view.addSubview(host.view)
     host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -578,15 +588,14 @@ final class VisionMultiviewSession: ObservableObject, AVExperienceController.Del
 }
 
 private struct VisionMultiviewChannelStrip: View {
-  let channels: [VisionMultiviewItem]
   @ObservedObject var multiview: VisionMultiviewSession
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text(channels.contains { $0.makeManager != nil } ? "KinoPub Videos" : "KinoPub Live Channels").font(.headline)
+      Text(multiview.catalogContext == nil ? "KinoPub Live Channels" : "KinoPub Videos").font(.headline)
       ScrollView(.horizontal) {
         HStack(spacing: 14) {
-          ForEach(channels) { channel in
+          ForEach(multiview.availableItems) { channel in
             let active = multiview.activeIDs.contains(channel.id)
             VStack {
               Button {
@@ -614,9 +623,87 @@ private struct VisionMultiviewChannelStrip: View {
         }
         .padding(.vertical, 4)
       }
+      if let context = multiview.catalogContext {
+        VisionMultiviewCatalogSearch(context: context, multiview: multiview)
+      }
       if let message = multiview.errorMessage { Text(message).font(.footnote) }
     }
     .padding(20)
+  }
+}
+
+private struct VisionMultiviewCatalogSearch: View {
+  let context: any AppContextProtocol
+  @ObservedObject var multiview: VisionMultiviewSession
+  @State private var query = ""
+  @State private var results: [MediaItem] = []
+  @State private var isAdding = false
+  @State private var searchFailed = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      TextField("Find another movie or series", text: $query)
+        .textFieldStyle(.roundedBorder)
+      if searchFailed {
+        Text("Search is unavailable.").font(.footnote)
+      }
+      if !results.isEmpty {
+        ScrollView(.horizontal) {
+          HStack {
+            ForEach(results) { item in
+              Button {
+                Task { await add(item) }
+              } label: {
+                Label(item.localizedTitle, systemImage: "plus.circle")
+                  .lineLimit(1)
+              }
+              .disabled(isAdding || multiview.isChanging || multiview.activeIDs.count >= VisionMultiviewSession.limit)
+            }
+          }
+        }
+      }
+    }
+    .task(id: query) {
+      results = []
+      searchFailed = false
+      let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard term.count >= 2 else { return }
+      do {
+        try await Task.sleep(for: .milliseconds(300))
+        let found = try await context.contentService.search(query: term, contentType: nil, field: nil, page: nil)
+        guard !Task.isCancelled else { return }
+        results = Array(found.items.filter { $0.type.lowercased() != "3d" }.prefix(12))
+      } catch {
+        if !Task.isCancelled { searchFailed = true }
+      }
+    }
+  }
+
+  private func add(_ result: MediaItem) async {
+    guard !isAdding else { return }
+    isAdding = true
+    defer { isAdding = false }
+    do {
+      let item = try await context.contentService.fetchDetails(for: String(result.id)).item
+      let playable: any PlayableItem
+      if item.isSeries, let target = item.continueEpisode() ?? item.orderedEpisodes.first {
+        let episode = target.episode
+        episode.seasonNumber = target.season.number
+        episode.mediaId = target.season.mediaId ?? item.id
+        episode.mediaTitle = item.localizedTitle
+        playable = episode
+      } else {
+        playable = item
+      }
+      guard let entry = VisionMultiviewItem(item: playable, context: context) else {
+        multiview.errorMessage = "No playable video was found for this title."
+        return
+      }
+      if !multiview.activeIDs.contains(entry.id) { await multiview.toggle(entry) }
+      query = ""
+    } catch {
+      multiview.errorMessage = "Could not load this title."
+    }
   }
 }
 #endif

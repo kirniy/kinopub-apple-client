@@ -28,7 +28,15 @@ Open the native **Quality** menu in the playback window or use the **Quality** t
 5. Open the system playback controls.
 6. Select **Watch in Apple Environment**.
 
-The prepared movie has a native stereo video track, the original audio track, and English subtitles. Use Apple’s timeline to seek. If KinoPub cannot identify the original audio or find full English subtitles, it reports the missing track. The app removes the temporary copy when you leave the movie.
+The prepared movie has a native stereo video track and uses the playback language settings from Profile. Use Apple’s timeline to seek. If KinoPub cannot find a requested audio track or full subtitle track, it reports the missing track. The app removes the temporary copy when you leave the movie.
+
+## Adjust the 3D eye alignment
+
+Open **3D Format** during packed 3D playback. Move the slider or use **Right Eye Up** and **Right Eye Down** until the views align. KinoPub saves the adjustment for that title and format. Set it before you prepare the movie for Apple Cinema. Select **Reset to Auto** to remove the manual adjustment.
+
+## Set the playback languages
+
+Open **Profile**, then **Playback Languages**. Select **System Default**, **Original Audio + English Subtitles**, or **Custom**. In Custom, select the audio and subtitle languages separately. Select **Off** to turn subtitles off.
 
 ## Watch movies and episodes in Multiview
 
@@ -40,6 +48,6 @@ The prepared movie has a native stereo video track, the original audio track, an
 6. Open **Multiview** from the library controls.
 7. Select **Start Multiview**.
 
-Multiview supports up to five videos. Use **Listen** to choose which video plays audio.
+Multiview supports up to five videos. Search for another title from the system content selector to add it during playback. For series, this opens the next episode from Continue Watching or the first available episode. Use **Listen** to choose which video plays audio.
 
 The [Cinema remux framework](Vendor/KinoCinemaRemux/README.md) includes its license and build instructions.

@@ -110,10 +110,14 @@ private struct VisionStereoPlaybackView: View {
         VisionStereoSurface(player: manager.player, layout: layout,
                             autoDetect: manager.visionStereoLayout == .automatic && manager.detectedStereoLayout == nil,
                             onDetected: { result in
-                              if manager.detectedStereoLayout == nil { manager.detectedStereoLayout = result }
+                              if manager.detectedStereoLayout == nil {
+                                manager.detectedStereoLayout = result
+                                manager.restoreStereoAlignment()
+                              }
                             },
                             onResolution: manager.updateVideoResolution,
-                            onAlignment: { manager.stereoEyeOffset = $0 },
+                            manualOffset: manager.manualStereoEyeOffset,
+                            onAlignment: manager.updateStereoAlignment,
                             controlsVisible: manager.visionStereoControlsVisible,
                             onTap: {
                               if layout != .automatic { manager.visionStereoControlsVisible.toggle() }
@@ -148,10 +152,12 @@ private struct VisionStereoPlaybackView: View {
             let packing = format.extensions[.viewPackingKind]
             if packing == .viewPackingKind(.sideBySide) {
               manager.detectedStereoLayout = .sideBySide
+              manager.restoreStereoAlignment()
               return
             }
             if packing == .viewPackingKind(.overUnder) {
               manager.detectedStereoLayout = .topAndBottom
+              manager.restoreStereoAlignment()
               return
             }
           }
@@ -277,6 +283,7 @@ private struct VisionStereoControls: View {
           }
         }
       }
+      if layout == .sideBySide || layout == .topAndBottom { eyeAlignmentControls }
     case .cinema:
       cinemaControls
     case .audio:
@@ -284,6 +291,34 @@ private struct VisionStereoControls: View {
     case .subtitles:
       trackChoices(subtitleGroup, empty: "No subtitles available")
     }
+  }
+
+  private var eyeAlignmentControls: some View {
+    let offset = manager.manualStereoEyeOffset ?? manager.stereoEyeOffset
+    let alignment = Binding(
+      get: { manager.manualStereoEyeOffset ?? manager.stereoEyeOffset },
+      set: { manager.setStereoAlignment($0) }
+    )
+    return HStack {
+      Button {
+        manager.setStereoAlignment(offset - 0.005)
+      } label: {
+        Label("Right Eye Down", systemImage: "arrow.down")
+      }
+      Slider(value: alignment, in: -0.32...0.32, step: 0.005) {
+        Text("Vertical Alignment")
+      }
+      .frame(maxWidth: 200)
+      Button {
+        manager.setStereoAlignment(offset + 0.005)
+      } label: {
+        Label("Right Eye Up", systemImage: "arrow.up")
+      }
+      if manager.manualStereoEyeOffset != nil {
+        Button("Reset to Auto") { manager.setStereoAlignment(nil) }
+      }
+    }
+    .disabled(manager.cinemaPhase.isPreparing)
   }
 
   @ViewBuilder
@@ -381,6 +416,7 @@ private struct VisionStereoSurface: View {
   let autoDetect: Bool
   let onDetected: (VisionStereoLayout) -> Void
   let onResolution: (CGSize) -> Void
+  let manualOffset: Double?
   let onAlignment: (Double) -> Void
   let controlsVisible: Bool
 
@@ -444,7 +480,9 @@ private struct VisionStereoSurface: View {
     .task {
       frames.start(item: player.currentItem, layout: layout, onDetected: autoDetect ? onDetected : nil,
                    onResolution: onResolution, onAlignment: onAlignment)
+      frames.setManualOffset(manualOffset)
     }
+    .onChange(of: manualOffset) { _, offset in frames.setManualOffset(offset) }
     .onChange(of: autoDetect) { _, enabled in
       frames.setDetection(enabled ? onDetected : nil)
     }
@@ -473,6 +511,9 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
   private var detector: VisionStereoDetector?
   private var onDetected: ((VisionStereoLayout) -> Void)?
   private var rightEyeOffset = 0.0
+  private var manualOffset: Double?
+  private var lastFrame: (CVPixelBuffer, CMTime)?
+  private var redrawRequested = false
   private var onResolution: ((CGSize) -> Void)?
   private var onAlignment: ((Double) -> Void)?
 
@@ -502,6 +543,11 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     detector = callback != nil || layout != .automatic ? VisionStereoDetector() : nil
   }
 
+  func setManualOffset(_ offset: Double?) {
+    manualOffset = offset
+    redrawRequested = true
+  }
+
   func stop() {
     displayLink?.invalidate()
     displayLink = nil
@@ -517,6 +563,9 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     detector = nil
     onDetected = nil
     rightEyeOffset = 0
+    lastFrame = nil
+    manualOffset = nil
+    redrawRequested = false
     captions = ""
     failed = false
     renderer.flush()
@@ -524,9 +573,12 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
 
   @objc private func displayFrame(_ link: CADisplayLink) {
     guard let videoOutput, renderer.isReadyForMoreMediaData else { return }
-    let time = videoOutput.itemTime(forHostTime: link.targetTimestamp)
-    guard time.isNumeric, videoOutput.hasNewPixelBuffer(forItemTime: time),
-          let frame = videoOutput.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
+    let nextTime = videoOutput.itemTime(forHostTime: link.targetTimestamp)
+    let nextFrame = nextTime.isNumeric && videoOutput.hasNewPixelBuffer(forItemTime: nextTime)
+      ? videoOutput.copyPixelBuffer(forItemTime: nextTime, itemTimeForDisplay: nil) : nil
+    if let nextFrame { lastFrame = (nextFrame, nextTime) }
+    guard nextFrame != nil || redrawRequested, let (frame, time) = lastFrame else { return }
+    redrawRequested = false
     let width = CVPixelBufferGetWidth(frame)
     let height = CVPixelBufferGetHeight(frame)
     let size = CGSize(width: width, height: height)
@@ -535,7 +587,7 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
       aspectRatio = layout.aspectRatio(width: width, height: height)
       onResolution?(size)
     }
-    if let result = detector?.observe(frame, at: link.timestamp, layoutHint: layout == .automatic ? nil : layout) {
+    if nextFrame != nil, let result = detector?.observe(frame, at: link.timestamp, layoutHint: layout == .automatic ? nil : layout) {
       rightEyeOffset = detector?.verticalOffset ?? 0
       onAlignment?(rightEyeOffset)
       onDetected?(result)
@@ -546,7 +598,7 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     }
     guard layout != .automatic else { return }
     if splitter == nil { splitter = VisionStereoFrameSplitter() }
-    guard let sample = splitter?.sample(from: frame, layout: layout, time: time, rightEyeOffset: rightEyeOffset) else {
+    guard let sample = splitter?.sample(from: frame, layout: layout, time: time, rightEyeOffset: manualOffset ?? rightEyeOffset) else {
       failed = true
       link.invalidate()
       return

@@ -59,7 +59,12 @@ struct Sidebar: View {
         Button {
           showProfile = true
         } label: {
+#if os(visionOS)
           Label("Profile".localized, systemImage: "person.crop.circle")
+            .modifier(VisionSidebarRowSurface(selected: false))
+#else
+          Label("Profile".localized, systemImage: "person.crop.circle")
+#endif
         }
 #if os(macOS)
         .buttonStyle(.borderless)
@@ -70,8 +75,10 @@ struct Sidebar: View {
     }
     .listStyle(.sidebar)
     .scrollContentBackground(.hidden)
+#if !os(visionOS)
     .background(Color.KinoPub.background)
     .navigationTitle("KinoPub")
+#endif
 #if os(macOS)
     .navigationSplitViewColumnWidth(min: 220, ideal: 240)
 #endif
@@ -91,14 +98,12 @@ struct Sidebar: View {
       onSelect()
     } label: {
       rowLabel(item, locked: locked)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
+        .modifier(VisionSidebarRowSurface(selected: selection == item))
     }
     .buttonStyle(.plain)
-    .hoverEffect()
     .disabled(locked)
     .accessibilityAddTraits(selection == item ? .isSelected : [])
-    .listRowBackground(selection == item ? Color.KinoPub.accent.opacity(0.18) : Color.clear)
+    .listRowBackground(Color.clear)
 #else
     rowLabel(item, locked: locked).tag(item)
 #endif
@@ -108,6 +113,7 @@ struct Sidebar: View {
     Label {
       HStack {
         Text(item.title.localized)
+          .lineLimit(2)
         if locked {
           Spacer(minLength: 6)
           Image(systemName: "lock.fill").font(.caption2)
@@ -130,6 +136,25 @@ struct Sidebar: View {
     .environmentObject(navigationState)
   }
 }
+
+#if os(visionOS)
+private struct VisionSidebarRowSurface: ViewModifier {
+  let selected: Bool
+
+  func body(content: Content) -> some View {
+    let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+    content
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 10)
+      .frame(minHeight: 44)
+      .background(selected ? Color.KinoPub.accent.opacity(0.18) : .clear, in: shape)
+      .contentShape(.interaction, shape)
+      .contentShape(.hoverEffect, shape)
+      .hoverEffect(.highlight)
+  }
+}
+#endif
 
 private struct ProfileSheetContent: View {
   @Environment(\.dismiss) private var dismiss

@@ -64,6 +64,11 @@ struct ProfileView: View {
 
 #if os(visionOS)
             Section {
+              NavigationLink("Playback Languages") {
+                VisionPlaybackLanguageSettings().visionProfileBack()
+              }
+            }
+            Section {
               Toggle("Multiview for Movies and Series", isOn: $catalogMultiviewEnabled)
             } footer: {
               Text("Add up to five 2D videos from movie or episode pages. Open Multiview from the library controls.")

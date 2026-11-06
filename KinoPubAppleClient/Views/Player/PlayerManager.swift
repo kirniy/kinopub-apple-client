@@ -137,7 +137,34 @@ class PlayerManager: ObservableObject {
   private var cinemaFile: URL?
   private var cinemaOriginalItem: AVPlayerItem?
   private var cinemaAudioChoice: (name: String, language: String?)?
-  var stereoEyeOffset = 0.0
+  @Published private(set) var stereoEyeOffset = 0.0
+  @Published private(set) var manualStereoEyeOffset: Double?
+
+  private var stereoAlignmentKey: String {
+    "\(stereoLayoutKey).alignment.\(resolvedStereoLayout.rawValue)"
+  }
+
+  func updateStereoAlignment(_ offset: Double) {
+    if stereoEyeOffset != offset { stereoEyeOffset = offset }
+    if manualStereoEyeOffset == nil {
+      manualStereoEyeOffset = UserDefaults.standard.object(forKey: stereoAlignmentKey) as? Double
+    }
+  }
+
+  func setStereoAlignment(_ offset: Double?) {
+    let limited = offset.map { min(max($0, -0.32), 0.32) }
+    if let limited { UserDefaults.standard.set(limited, forKey: stereoAlignmentKey) }
+    else { UserDefaults.standard.removeObject(forKey: stereoAlignmentKey) }
+    if manualStereoEyeOffset != limited {
+      manualStereoEyeOffset = limited
+      cancelAppleCinemaPreparation()
+    }
+  }
+
+  func restoreStereoAlignment() {
+    let saved = UserDefaults.standard.object(forKey: stereoAlignmentKey) as? Double
+    manualStereoEyeOffset = saved.map { min(max($0, -0.32), 0.32) }
+  }
 
   @MainActor
   func prepareAppleCinema() {
@@ -152,7 +179,7 @@ class PlayerManager: ObservableObject {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("KinoPubCinema-\(id)", isDirectory: true)
     let resolution = player.currentItem?.preferredMaximumResolution ?? .zero
     let size = resolution == .zero ? CGSize(width: 1920, height: 1080) : resolution
-    let eyeOffset = stereoEyeOffset
+    let eyeOffset = manualStereoEyeOffset ?? stereoEyeOffset
     cinemaJobID = id
     cinemaPhase = .downloading(0)
     let update: @Sendable (CinemaPhase) async -> Void = { [weak self] phase in
@@ -219,7 +246,11 @@ class PlayerManager: ObservableObject {
     player.replaceCurrentItem(with: item)
     bindPlaybackItem(item, applySelection: false)
     isCinemaPlaying = true
-    await applyVisionMediaSelection(to: item)
+    if let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+       player.currentItem === item,
+       let option = group.options.first(where: { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }) {
+      item.select(option, in: group)
+    }
     guard player.currentItem === item else { return }
     if time.isNumeric { await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
     if player.currentItem === item { player.play() }
@@ -246,25 +277,55 @@ class PlayerManager: ObservableObject {
 
   @MainActor
   private func makeCinemaSource(url: URL, size: CGSize) async -> VisionCinemaSource {
-    let currentGroup = try? await player.currentItem?.asset.loadMediaSelectionGroup(for: .audible)
-    let preferred = currentGroup.flatMap { originalAudioOption(in: $0.options) }
+    let preference = VisionPlaybackLanguage.current
+    let item = player.currentItem
+    let audioGroup = try? await item?.asset.loadMediaSelectionGroup(for: .audible)
+    let preferred: AVMediaSelectionOption?
+    let rule: VisionCinemaSource.AudioRule
+    switch preference.audio {
+    case VisionPlaybackLanguage.system:
+      rule = .system
+      preferred = audioGroup.flatMap { item?.currentMediaSelection.selectedMediaOption(in: $0) }
+    case VisionPlaybackLanguage.original:
+      rule = .original
+      preferred = audioGroup.flatMap { originalAudioOption(in: $0.options) }
+    default:
+      rule = .language(preference.audio)
+      preferred = audioGroup.flatMap { audioOption(language: preference.audio, in: $0.options) }
+    }
     let tracks = audioTrackMetadata()
-    let originalLanguages = Set(tracks.filter { Self.isOriginalAudioLabel($0.label) }.map(\.language))
-    let dubbedLanguages = Set(Dictionary(grouping: tracks, by: \.language).compactMap { language, tracks in
+    let originals = Set(tracks.filter { Self.isOriginalAudioLabel($0.label) }.map(\.language))
+    let dubs = Set(Dictionary(grouping: tracks, by: \.language).compactMap { language, tracks in
       tracks.allSatisfy { Self.isDubAudioLabel($0.label) } ? language : nil
     })
     let audio = VisionCinemaSource.Audio(
-      name: preferred.map { Self.renditionName($0) ?? $0.displayName } ?? cinemaAudioChoice?.name,
-      language: preferred.flatMap(Self.optionLanguage) ?? cinemaAudioChoice?.language,
-      originalLanguages: originalLanguages, dubbedLanguages: dubbedLanguages
+      name: preferred.map { Self.renditionName($0) ?? $0.displayName }
+        ?? (preference.audio == VisionPlaybackLanguage.original ? cinemaAudioChoice?.name : nil),
+      language: preferred.flatMap(Self.optionLanguage)
+        ?? (preference.audio == VisionPlaybackLanguage.original ? cinemaAudioChoice?.language : nil),
+      originalLanguages: originals, dubbedLanguages: dubs, rule: rule
     )
+    let subtitleLanguage: String?
+    switch preference.subtitles {
+    case VisionPlaybackLanguage.off:
+      subtitleLanguage = nil
+    case VisionPlaybackLanguage.system:
+      let group = try? await item?.asset.loadMediaSelectionGroup(for: .legible)
+      let option = group.flatMap { item?.currentMediaSelection.selectedMediaOption(in: $0) }
+      subtitleLanguage = option.flatMap {
+        $0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) ? nil : Self.optionLanguage($0)
+      }
+    default:
+      subtitleLanguage = preference.subtitles
+    }
     let subtitle = activeMovieVideo?.subtitles.first {
-      Self.languageCode($0.lang) == "en" && $0.forced != true
+      subtitleLanguage != nil && Self.languageCode($0.lang) == subtitleLanguage && $0.forced != true
     }.flatMap { subtitle -> VisionCinemaSource.Subtitle? in
       guard let url = URL(string: subtitle.url), url.scheme == "https" || url.scheme == "http" else { return nil }
       return .init(url: url, shift: Double(subtitle.shift) / 1_000)
     }
-    return VisionCinemaSource(url: url, maxSize: size, audio: audio, subtitle: subtitle)
+    return VisionCinemaSource(url: url, maxSize: size, audio: audio, subtitle: subtitle,
+                              subtitleLanguage: subtitleLanguage)
   }
 
   private var activeMovieVideo: Video? {
@@ -292,6 +353,7 @@ class PlayerManager: ObservableObject {
       UserDefaults.standard.set(layout.rawValue, forKey: stereoLayoutKey)
     }
     visionStereoLayout = layout
+    restoreStereoAlignment()
     visionStereoControlsVisible = true
   }
 
@@ -475,6 +537,7 @@ class PlayerManager: ObservableObject {
          let layout = VisionStereoLayout(rawValue: raw), layout != .native {
         visionStereoLayout = layout
       }
+      restoreStereoAlignment()
 #endif
     }
     // Seed the resume point synchronously from the local store so the native "Continue" prompt can
@@ -584,26 +647,46 @@ class PlayerManager: ObservableObject {
 #if os(visionOS)
   @MainActor
   private func applyVisionMediaSelection(to item: AVPlayerItem) async {
+    let preference = VisionPlaybackLanguage.current
     async let audioGroup = item.asset.loadMediaSelectionGroup(for: .audible)
     async let subtitleGroup = item.asset.loadMediaSelectionGroup(for: .legible)
     let audio = try? await audioGroup
     let subtitles = try? await subtitleGroup
     guard player.currentItem === item else { return }
 
-    if let audio, let original = originalAudioOption(in: audio.options) {
-      item.select(original, in: audio)
+    if let audio, preference.audio != VisionPlaybackLanguage.system {
+      let option = preference.audio == VisionPlaybackLanguage.original
+        ? originalAudioOption(in: audio.options)
+        : audioOption(language: preference.audio, in: audio.options)
+      if let option { item.select(option, in: audio) }
     }
     if let subtitles {
-      let english = subtitles.options.filter { option in
-        if Self.languageCode(option.extendedLanguageTag ?? option.locale?.identifier) == "en" { return true }
-        let name = option.displayName.lowercased()
-        return name.contains("english") || name.contains("английск")
-      }
-      let full = english.first { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }
-      if let preferred = full ?? english.first {
+      if preference.subtitles == VisionPlaybackLanguage.off, subtitles.allowsEmptySelection {
+        item.select(nil, in: subtitles)
+      } else if preference.subtitles != VisionPlaybackLanguage.system,
+                let preferred = Self.subtitleOption(language: preference.subtitles, in: subtitles.options) {
         item.select(preferred, in: subtitles)
       }
     }
+  }
+
+  private func audioOption(language: String, in options: [AVMediaSelectionOption]) -> AVMediaSelectionOption? {
+    let matching = options.filter {
+      Self.optionLanguage($0) == language && !$0.hasMediaCharacteristic(.describesVideoForAccessibility)
+    }
+    return matching.first { Self.isOriginalAudioLabel(Self.optionLabel($0)) } ?? matching.first
+  }
+
+  private static func subtitleOption(language: String, in options: [AVMediaSelectionOption]) -> AVMediaSelectionOption? {
+    let matching = options.filter { option in
+      if optionLanguage(option) == language { return true }
+      if language == "en" {
+        let name = option.displayName.lowercased()
+        return name.contains("english") || name.contains("английск")
+      }
+      return false
+    }
+    return matching.first { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) } ?? matching.first
   }
 
   private func originalAudioOption(in options: [AVMediaSelectionOption]) -> AVMediaSelectionOption? {

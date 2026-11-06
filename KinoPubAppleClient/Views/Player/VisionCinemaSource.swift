@@ -5,15 +5,15 @@ import KinoCinemaRemux
 #endif
 
 enum VisionCinemaError: LocalizedError {
-  case unsupportedDevice, unsupportedStream, download, originalAudio, englishSubtitles, conversion, storage, container
+  case unsupportedDevice, unsupportedStream, download, originalAudio, subtitlesUnavailable, conversion, storage, container
 
   var errorDescription: String? {
     switch self {
     case .unsupportedDevice: "This device cannot encode native stereo video."
     case .unsupportedStream: "This stream cannot be prepared for Apple Environments."
     case .download: "KinoPub could not download part of this movie. Try again."
-    case .originalAudio: "KinoPub could not identify the original audio track for this movie."
-    case .englishSubtitles: "KinoPub could not find full English subtitles for this movie."
+    case .originalAudio: "KinoPub could not find the selected audio track for this movie."
+    case .subtitlesUnavailable: "KinoPub could not find full subtitles in the selected language."
     case .conversion: "KinoPub could not finish preparing this movie."
     case .storage: "There is not enough free space to prepare this movie."
     case .container: "The downloaded tracks could not be packaged for the native player."
@@ -22,11 +22,14 @@ enum VisionCinemaError: LocalizedError {
 }
 
 struct VisionCinemaSource: Sendable {
+  enum AudioRule: Sendable { case original, system, language(String) }
+
   struct Audio: Sendable {
     let name: String?
     let language: String?
     let originalLanguages: Set<String>
     let dubbedLanguages: Set<String>
+    var rule: AudioRule = .original
   }
 
   struct Subtitle: Sendable {
@@ -40,12 +43,15 @@ struct VisionCinemaSource: Sendable {
     let audioLanguage: String?
     let captions: [VisionCinemaCue]
     let duration: Double
+    var subtitleLanguage: String? = "en"
+    var allowDefaultAudio = false
   }
 
   let url: URL
   let maxSize: CGSize
   let audio: Audio
   let subtitle: Subtitle?
+  var subtitleLanguage: String? = "en"
 
   func download(to directory: URL, progress: @Sendable (Double) async -> Void) async throws -> Local {
     let (master, base) = try await Self.playlist(url)
@@ -68,7 +74,8 @@ struct VisionCinemaSource: Sendable {
       $0["TYPE"] == "SUBTITLES" && $0["GROUP-ID"] == variant.attributes["SUBTITLES"]
     }
     let subtitleURL = textGroup.first {
-      $0["FORCED"] != "YES" && PlayerManager.languageCode($0["LANGUAGE"]) == "en"
+      subtitleLanguage != nil && $0["FORCED"] != "YES" &&
+      PlayerManager.languageCode($0["LANGUAGE"]) == subtitleLanguage
     }?["URI"].flatMap { Self.remoteURL($0, relativeTo: base) }
     let (videoList, videoBase) = try await Self.playlist(variant.url)
     let video = try MediaPlaylist(videoList, base: videoBase)
@@ -114,9 +121,12 @@ struct VisionCinemaSource: Sendable {
         captions = VisionCinemaCue.parse(data, transportStart: firstPTS)
       }
     }
-    guard !captions.isEmpty else { throw VisionCinemaError.englishSubtitles }
+    if subtitleLanguage != nil && captions.isEmpty { throw VisionCinemaError.subtitlesUnavailable }
+    let allowDefaultAudio: Bool
+    if case .system = audio.rule { allowDefaultAudio = true } else { allowDefaultAudio = false }
     return Local(video: try Self.prepareContainer(videoFile), audio: audioFile, audioLanguage: audioLanguage,
-                 captions: Array(Set(captions)), duration: video.duration)
+                 captions: Array(Set(captions)), duration: video.duration,
+                 subtitleLanguage: subtitleLanguage, allowDefaultAudio: allowDefaultAudio)
   }
 
   static func prepareContainer(_ input: URL) throws -> URL {
@@ -160,6 +170,23 @@ struct VisionCinemaSource: Sendable {
 
   private func chooseAudio(_ group: [[String: String]]) throws -> [String: String]? {
     if group.isEmpty { return nil }
+    switch audio.rule {
+    case .system:
+      if let name = audio.name, let match = group.first(where: { $0["NAME"] == name }) { return match }
+      return group.first { $0["DEFAULT"] == "YES" } ?? group[0]
+    case .language(let language):
+      let matching = group.filter {
+        PlayerManager.languageCode($0["LANGUAGE"]) == language &&
+        !($0["CHARACTERISTICS"] ?? "").contains("describes-video")
+      }
+      if let name = audio.name, let match = matching.first(where: { $0["NAME"] == name }) { return match }
+      if let chosen = matching.first(where: { PlayerManager.isOriginalAudioLabel($0["NAME"] ?? "") }) ?? matching.first {
+        return chosen
+      }
+      throw VisionCinemaError.originalAudio
+    case .original:
+      break
+    }
     let candidates = group.filter {
       !PlayerManager.isDubAudioLabel($0["NAME"] ?? "") &&
       !($0["CHARACTERISTICS"] ?? "").contains("describes-video")

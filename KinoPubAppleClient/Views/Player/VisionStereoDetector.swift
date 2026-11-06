@@ -106,14 +106,22 @@ struct VisionStereoDetector {
       }
     }
 
-    let side = eyeDifference(eyeWidth: width / 2, eyeHeight: height, offsetX: width / 2, offsetY: 0, luma: luma)
-    let top = eyeDifference(eyeWidth: width, eyeHeight: height / 2, offsetX: 0, offsetY: height / 2, luma: luma)
+    func compare(_ layout: VisionStereoLayout) -> (error: Double, offset: Double) {
+      if layout == .topAndBottom {
+        return eyeDifference(eyeWidth: width, eyeHeight: height / 2, offsetX: 0, offsetY: height / 2, luma: luma)
+      }
+      return eyeDifference(eyeWidth: width / 2, eyeHeight: height, offsetX: width / 2, offsetY: 0, luma: luma)
+    }
+    if let layoutHint {
+      let result = compare(layoutHint)
+      return result.error < 30 ? (layoutHint, result.offset) : nil
+    }
+    let side = compare(.sideBySide)
+    let top = compare(.topAndBottom)
     let bestLayout: VisionStereoLayout = side.error < top.error ? .sideBySide : .topAndBottom
     let best = bestLayout == .sideBySide ? side : top
     let other = bestLayout == .sideBySide ? top : side
-    // Require a clear match even when the user has already selected the packing.
-    guard layoutHint == nil || layoutHint == bestLayout,
-          best.error < 30, other.error - best.error > 4, best.error < other.error * 0.66 else { return nil }
+    guard best.error < 30, other.error - best.error > 4, best.error < other.error * 0.66 else { return nil }
     return (bestLayout, best.offset)
   }
 
@@ -126,8 +134,8 @@ struct VisionStereoDetector {
     var points: [(x: Int, y: Int, value: Int)] = []
     var lowest = 255
     var highest = 0
-    for row in 2...8 {
-      let y = row * eyeHeight / 10
+    for row in 6...14 {
+      let y = row * eyeHeight / 20
       for column in 1...11 {
         let x = column * eyeWidth / 12
         let reference = luma(x, y)
@@ -140,7 +148,7 @@ struct VisionStereoDetector {
 
     func error(at deltaY: Int) -> Double {
       var best = Int.max
-      for x in -2...2 {
+      for x in -4...4 {
         let deltaX = min(max(x * xStep, 1 - eyeWidth / 12), eyeWidth / 12 - 1)
         var error = 0
         for point in points {
@@ -154,14 +162,16 @@ struct VisionStereoDetector {
 
     let baseline = error(at: 0)
     var best = (error: baseline, shift: 0)
-    for step in -5...5 where step != 0 {
-      let shift = step * yStep
+    let limit = eyeHeight * 27 / 100
+    for shift in stride(from: -12 * yStep, through: 12 * yStep, by: yStep)
+      where shift != 0 && abs(shift) <= limit {
       let difference = error(at: shift)
       if difference < best.error { best = (difference, shift) }
     }
     let coarseShift = best.shift
     let refineStep = max(1, yStep / 4)
-    for shift in stride(from: coarseShift - yStep, through: coarseShift + yStep, by: refineStep) {
+    for shift in stride(from: coarseShift - yStep, through: coarseShift + yStep, by: refineStep)
+      where abs(shift) <= limit {
       let difference = error(at: shift)
       if difference < best.error { best = (difference, shift) }
     }

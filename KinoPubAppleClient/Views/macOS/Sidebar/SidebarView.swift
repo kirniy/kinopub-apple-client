@@ -27,8 +27,8 @@ struct SidebarView: View {
   @StateObject private var catalogMultiview = VisionCatalogMultiview()
   @State private var showsCatalogMultiview = false
   @State private var startCatalogMultiview = false
-  @State private var compactColumn: NavigationSplitViewColumn = .detail
-  @State private var isSidebarVisible = false
+  @AppStorage("visionSpatialLibraryVisible") private var isSidebarVisible = true
+  @ScaledMetric(relativeTo: .body) private var railWidth: CGFloat = 250
 #endif
 
   var body: some View {
@@ -52,14 +52,13 @@ struct SidebarView: View {
 #if os(visionOS)
       .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
         HStack(spacing: 8) {
-          if !isSidebarVisible {
-            Button {
-              navigationState.columnVisibility = .all
-              compactColumn = .sidebar
-            } label: {
-              Label("Library".localized, systemImage: "sidebar.left")
-            }
+          Button {
+            withAnimation { isSidebarVisible.toggle() }
+          } label: {
+            Label("Library".localized, systemImage: "sidebar.left")
           }
+          .accessibilityValue(isSidebarVisible ? Text("Shown") : Text("Hidden"))
+          .help(isSidebarVisible ? "Hide Library" : "Show Library")
           libraryShortcut(.history)
           libraryShortcut(.bookmarks)
           if catalogMultiviewEnabled {
@@ -116,14 +115,13 @@ struct SidebarView: View {
     startCatalogMultiview = false
     let items = catalogMultiview.items
     floatingPlayback.manager?.player.pause()
-    Task { await catalogMultiview.session.start(items, available: items) }
+    Task { await catalogMultiview.session.start(items, available: items, catalog: appContext) }
   }
 
   private func libraryShortcut(_ item: SidebarItem) -> some View {
     Button {
       navigationState.sidebarSelection = item
       navigationState.popToRoot(for: item)
-      compactColumn = .detail
     } label: {
       Label(item.title.localized, systemImage: item.systemImage)
     }
@@ -134,15 +132,32 @@ struct SidebarView: View {
   @ViewBuilder
   private var splitView: some View {
 #if os(visionOS)
-    NavigationSplitView(columnVisibility: $navigationState.columnVisibility,
-                        preferredCompactColumn: $compactColumn) {
-      Sidebar(selection: $navigationState.sidebarSelection, onSelect: { compactColumn = .detail })
-        .onAppear { isSidebarVisible = true }
-        .onDisappear { isSidebarVisible = false }
-    } detail: {
+    GeometryReader { geometry in
       splitDetail
+        .ornament(visibility: isSidebarVisible ? .visible : .hidden,
+                  attachmentAnchor: .scene(.leading), contentAlignment: .trailing) {
+          VStack(alignment: .leading, spacing: 0) {
+            HStack {
+              Text("KinoPub").font(.headline)
+              Spacer()
+              Button {
+                withAnimation { isSidebarVisible = false }
+              } label: {
+                Label("Hide Library", systemImage: "sidebar.leading")
+                  .labelStyle(.iconOnly)
+              }
+              .buttonStyle(.borderless)
+                .help("Hide Library")
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            Sidebar(selection: $navigationState.sidebarSelection)
+          }
+          .frame(width: min(railWidth, 340), height: min(max(geometry.size.height - 40, 280), 720))
+          .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+          .padding(.trailing, 14)
+        }
     }
-    .navigationSplitViewStyle(.balanced)
 #else
     NavigationSplitView(columnVisibility: $navigationState.columnVisibility) {
       Sidebar(selection: $navigationState.sidebarSelection)
@@ -215,11 +230,15 @@ final class VisionCatalogMultiview: ObservableObject {
   func contains(_ id: Int) -> Bool { items.contains { $0.id == id } }
 
   func toggle(_ item: VisionMultiviewItem) {
-    guard session.activeIDs.isEmpty, !session.isChanging else { return }
+    guard !session.isChanging else { return }
     if contains(item.id) {
       items.removeAll { $0.id == item.id }
+      if session.activeIDs.contains(item.id) { Task { await session.toggle(item) } }
     } else if items.count < VisionMultiviewSession.limit {
       items.append(item)
+      if !session.activeIDs.isEmpty && !session.activeIDs.contains(item.id) {
+        Task { await session.toggle(item) }
+      }
     }
   }
 
