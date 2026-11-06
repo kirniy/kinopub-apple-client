@@ -27,12 +27,7 @@ struct SidebarNavigationDetail: View {
       mainCatalog(contentType: type, shortcut: .hot)
         .id("library-\(type.rawValue)")
     case .preset(let preset):
-      FilteredCatalogView(catalog: MediaCatalog(itemsService: appContext.contentService,
-                                                authState: authState,
-                                                errorHandler: errorHandler,
-                                                filter: preset.filter),
-                          title: preset.title.localized,
-                          linkProvider: RouteLinkProvider())
+      presetCatalog(preset)
         .id("preset-\(preset.rawValue)")
     case .sport:
       sport
@@ -79,6 +74,23 @@ struct SidebarNavigationDetail: View {
                                    contentType: contentType,
                                    shortcut: shortcut,
                                    filter: categoryFilter(for: contentType)))
+  }
+
+  private func presetCatalog(_ preset: CatalogPreset) -> some View {
+    let catalog = FilteredCatalogView(catalog: MediaCatalog(itemsService: appContext.contentService,
+                                                           authState: authState,
+                                                           errorHandler: errorHandler,
+                                                           filter: preset.filter),
+                                     title: preset.title.localized,
+                                     linkProvider: RouteLinkProvider())
+#if os(visionOS)
+    // The spatial sidebar is an ornament, so the preset has no enclosing navigation stack.
+    return NavigationStack {
+      catalog.routeDestinations()
+    }
+#else
+    return catalog
+#endif
   }
 
   var sport: some View {

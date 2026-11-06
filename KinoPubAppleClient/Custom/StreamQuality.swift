@@ -60,6 +60,7 @@ enum StreamQuality: String, CaseIterable, Identifiable {
 import AVFoundation
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct VisionVideoRendition: Identifiable, Equatable {
   let size: CGSize
@@ -70,6 +71,68 @@ struct VisionVideoRendition: Identifiable, Equatable {
 
   static func label(for size: CGSize) -> String {
     "\(Int(size.width)) × \(Int(size.height))"
+  }
+}
+
+/// Keep the HLS media groups and restrict only the video resolution. AVPlayer loads the
+/// selected media playlists from their original URLs, including alternate sound and subtitles.
+final class VisionQualityPlaylist: NSObject, AVAssetResourceLoaderDelegate {
+  private let data: Data
+
+  init(contents: String, base: URL, size: CGSize) throws {
+    let lines = VisionCinemaSource.lines(contents)
+    let resolution = "\(Int(size.width))x\(Int(size.height))"
+    let streamTag = "#EXT-X-STREAM-INF:"
+    let uriPattern = try NSRegularExpression(pattern: #"\bURI="([^"]+)""#)
+    var result: [String] = []
+    var index = 0
+    var matched = false
+    while index < lines.count {
+      let line = lines[index]
+      index += 1
+      if let attributes = VisionCinemaSource.attributes(line, tag: streamTag) {
+        guard index < lines.count else { throw VisionCinemaError.unsupportedStream }
+        let uri = lines[index]
+        index += 1
+        guard attributes["RESOLUTION"] == resolution else { continue }
+        guard !uri.contains("{$"), let url = VisionCinemaSource.remoteURL(uri, relativeTo: base) else {
+          throw VisionCinemaError.unsupportedStream
+        }
+        result += [line, url.absoluteString]
+        matched = true
+      } else if line.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:") || line.hasPrefix("#EXT-X-CONTENT-STEERING:") {
+        continue
+      } else if line.hasPrefix("#") {
+        var resolved = line
+        for match in uriPattern.matches(in: line, range: NSRange(line.startIndex..., in: line)).reversed() {
+          guard let range = Range(match.range(at: 1), in: resolved) else { continue }
+          let uri = String(resolved[range])
+          guard !uri.contains("{$") else { throw VisionCinemaError.unsupportedStream }
+          if let url = VisionCinemaSource.remoteURL(uri, relativeTo: base) {
+            resolved.replaceSubrange(range, with: url.absoluteString)
+          }
+        }
+        result.append(resolved)
+      }
+    }
+    guard matched else { throw VisionCinemaError.unsupportedStream }
+    data = Data((result.joined(separator: "\n") + "\n").utf8)
+  }
+
+  func makeItem() -> AVPlayerItem {
+    let asset = AVURLAsset(url: URL(string: "kinopub-quality://stream/\(UUID().uuidString)/master.m3u8")!)
+    asset.resourceLoader.setDelegate(self, queue: .main)
+    return AVPlayerItem(asset: asset)
+  }
+
+  func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
+                      shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest) -> Bool {
+    guard request.request.url?.scheme == "kinopub-quality" else { return false }
+    request.contentInformationRequest?.contentType = UTType.m3uPlaylist.identifier
+    request.contentInformationRequest?.contentLength = Int64(data.count)
+    request.dataRequest?.respond(with: data)
+    request.finishLoading()
+    return true
   }
 }
 
@@ -85,7 +148,7 @@ struct VisionPlaybackQualityPanel: View {
       LabeledContent("Playing", value: resolution)
       VisionQualityPicker(manager: manager)
         .pickerStyle(.menu)
-        .disabled((manager.visionRenditions?.count ?? 0) < 2)
+        .disabled((manager.visionRenditions?.count ?? 0) < 2 || manager.visionQualitySwitching)
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
@@ -103,12 +166,14 @@ struct VisionPlaybackQualityButton: View {
 
   var body: some View {
     Menu {
+      if manager.visionQualitySwitching { Text("Switching Quality…") }
       if manager.videoResolution != .zero {
         Text("Playing \(VisionVideoRendition.label(for: manager.videoResolution))")
       }
       if let renditions = manager.visionRenditions {
         if renditions.count > 1 {
           VisionQualityPicker(manager: manager).pickerStyle(.inline)
+            .disabled(manager.visionQualitySwitching)
         } else {
           Text("No alternate video qualities available")
         }
@@ -131,12 +196,14 @@ private struct VisionQualityPicker: View {
       if let chosen = manager.selectedVisionRendition { return .rendition(chosen.size) }
       return .automatic
     } set: { option in
-      switch option {
-      case .profile: manager.restoreVisionProfileQuality()
-      case .automatic: manager.setVisionRendition(nil)
-      case .rendition(let size):
-        if let rendition = manager.visionRenditions?.first(where: { $0.size == size }) {
-          manager.setVisionRendition(rendition)
+      Task {
+        switch option {
+        case .profile: await manager.setVisionRendition(nil, useProfile: true)
+        case .automatic: await manager.setVisionRendition(nil)
+        case .rendition(let size):
+          if let rendition = manager.visionRenditions?.first(where: { $0.size == size }) {
+            await manager.setVisionRendition(rendition)
+          }
         }
       }
     }

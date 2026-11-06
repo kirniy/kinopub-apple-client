@@ -563,7 +563,7 @@ final class VisionMultiviewSession: ObservableObject, AVExperienceController.Del
 
   private func installContentPicker() {
     let picker = AVContentSelectionViewController()
-    picker.preferredContentSize = CGSize(width: 960, height: catalogContext == nil ? 240 : 420)
+    picker.preferredContentSize = CGSize(width: 960, height: catalogContext == nil ? 272 : 452)
     let host = UIHostingController(rootView: VisionMultiviewChannelStrip(multiview: self))
     picker.addChild(host)
     picker.view.addSubview(host.view)
@@ -592,7 +592,11 @@ private struct VisionMultiviewChannelStrip: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text(multiview.catalogContext == nil ? "KinoPub Live Channels" : "KinoPub Videos").font(.headline)
+      Text(multiview.catalogContext == nil ? "KinoPub Live Channels" : "KinoPub Videos")
+        .font(.headline)
+        .frame(maxWidth: .infinity, minHeight: 56)
+        // AVKit places its own close button over this corner.
+        .padding(.horizontal, 72)
       ScrollView(.horizontal) {
         HStack(spacing: 14) {
           ForEach(multiview.availableItems) { channel in

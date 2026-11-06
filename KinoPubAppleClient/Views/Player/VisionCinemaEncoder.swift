@@ -60,6 +60,7 @@ struct VisionCinemaCue: Hashable, Sendable {
 
 enum VisionCinemaEncoder {
   static func encode(_ source: VisionCinemaSource.Local, layout: VisionStereoLayout, eyeOffset: Double,
+                     horizontalOffset: Double = 0,
                      to destination: URL, progress: @escaping @Sendable (Double) async -> Void) async throws {
     guard VTIsStereoMVHEVCEncodeSupported() else { throw VisionCinemaError.unsupportedDevice }
     guard layout == .sideBySide || layout == .topAndBottom else { throw VisionCinemaError.unsupportedStream }
@@ -182,7 +183,8 @@ enum VisionCinemaEncoder {
           try await wait(for: videoInput, writer: writer)
           let time = frame.presentationTimeStamp
           guard let image = frame.imageBuffer,
-                let sample = splitter.sample(from: image, layout: layout, time: time, rightEyeOffset: eyeOffset, output: output),
+                let sample = splitter.sample(from: image, layout: layout, time: time, rightEyeOffset: eyeOffset,
+                                             horizontalOffset: horizontalOffset, output: output),
                 let eyes = sample.taggedBuffers,
                 adaptor.appendTaggedBuffers(eyes, withPresentationTime: time) else { throw VisionCinemaError.conversion }
           let fraction = min(max(time.seconds / videoDuration, 0), 1)

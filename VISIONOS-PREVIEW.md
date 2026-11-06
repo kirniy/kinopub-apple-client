@@ -15,9 +15,13 @@ Use Xcode 27 with the visionOS SDK installed.
 5. Set a bundle identifier that your provisioning profile permits.
 6. Click Run to build and install the app.
 
+## Open a video in full screen
+
+Start a movie or episode. Select **Open in Full Screen** above the video. Use the system playback controls to return to the window.
+
 ## Select video quality
 
-Open the native **Quality** menu in the playback window or use the **Quality** tab in the system player. The panel lists the resolutions in the current stream and shows the resolution in use. Select **Auto** to let the player choose. A selection takes effect as the player loads more video.
+Open the native **Quality** menu in the playback window or use the **Quality** tab in the system player. The panel shows the resolution in use. For 3D streams, selecting a resolution switches to that version of the video. **Auto** lets the player adapt to the connection.
 
 ## Watch a 3D movie in an Apple Environment
 
@@ -32,7 +36,7 @@ The prepared movie has a native stereo video track and uses the playback languag
 
 ## Adjust the 3D eye alignment
 
-Open **3D Format** during packed 3D playback. Move the slider or use **Right Eye Up** and **Right Eye Down** until the views align. KinoPub saves the adjustment for that title and format. Set it before you prepare the movie for Apple Cinema. Select **Reset to Auto** to remove the manual adjustment.
+Open **3D Format** during packed 3D playback. Use the vertical and horizontal sliders or the arrow buttons to adjust the right eye relative to the left. KinoPub saves the adjustment for that title and format. Set it before you prepare the movie for Apple Cinema. Select **Reset Alignment** to restore automatic vertical alignment and center the horizontal adjustment.
 
 ## Set the playback languages
 

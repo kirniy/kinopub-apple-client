@@ -117,6 +117,7 @@ private struct VisionStereoPlaybackView: View {
                             },
                             onResolution: manager.updateVideoResolution,
                             manualOffset: manager.manualStereoEyeOffset,
+                            horizontalOffset: manager.stereoHorizontalOffset,
                             onAlignment: manager.updateStereoAlignment,
                             controlsVisible: manager.visionStereoControlsVisible,
                             onTap: {
@@ -135,6 +136,9 @@ private struct VisionStereoPlaybackView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .environment(\.colorScheme, .dark)
+    .alert("Could Not Change Quality", isPresented: $manager.visionQualityFailed) {
+      Button("OK", role: .cancel) {}
+    }
     .task(id: manager.visionStereoLayout) {
       guard manager.visionStereoLayout == .automatic, manager.detectedStereoLayout == nil,
             let asset = manager.player.currentItem?.asset,
@@ -206,6 +210,7 @@ private struct VisionStereoControls: View {
         if layout != .native {
           VisionPlaybackQualityButton(manager: manager, observesPresentationSize: false)
           panelButton(.cinema, title: "Apple Cinema", icon: "mountain.2")
+            .disabled(manager.visionQualitySwitching)
         }
         if isFullscreen {
           Button(action: presentationAction) {
@@ -221,12 +226,14 @@ private struct VisionStereoControls: View {
       if let panel { choices(for: panel) }
     }
     .controlSize(.small)
-    .task {
+    .task(id: manager.player.currentItem) {
       guard let item = manager.player.currentItem else { return }
       async let audio = item.asset.loadMediaSelectionGroup(for: .audible)
       async let subtitles = item.asset.loadMediaSelectionGroup(for: .legible)
-      audioGroup = try? await audio
-      subtitleGroup = try? await subtitles
+      let (newAudio, newSubtitles) = (try? await audio, try? await subtitles)
+      guard !Task.isCancelled, item === manager.player.currentItem else { return }
+      audioGroup = newAudio
+      subtitleGroup = newSubtitles
       selectedMedia = item.currentMediaSelection
     }
     .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification).receive(on: RunLoop.main)) { note in
@@ -299,23 +306,42 @@ private struct VisionStereoControls: View {
       get: { manager.manualStereoEyeOffset ?? manager.stereoEyeOffset },
       set: { manager.setStereoAlignment($0) }
     )
-    return HStack {
-      Button {
-        manager.setStereoAlignment(offset - 0.005)
-      } label: {
-        Label("Right Eye Down", systemImage: "arrow.down")
+    let horizontal = Binding(get: { -manager.stereoHorizontalOffset },
+                             set: { manager.setStereoHorizontalAlignment(-$0) })
+    return VStack {
+      HStack {
+        Button {
+          manager.setStereoAlignment(offset - 0.005)
+        } label: {
+          Label("Right Eye Down", systemImage: "arrow.down")
+        }
+        Slider(value: alignment, in: -0.32...0.32, step: 0.005) { Text("Vertical Alignment") }
+          .frame(maxWidth: 200)
+        Button {
+          manager.setStereoAlignment(offset + 0.005)
+        } label: {
+          Label("Right Eye Up", systemImage: "arrow.up")
+        }
       }
-      Slider(value: alignment, in: -0.32...0.32, step: 0.005) {
-        Text("Vertical Alignment")
+      HStack {
+        Button {
+          horizontal.wrappedValue -= 0.0025
+        } label: {
+          Label("Right Eye Left", systemImage: "arrow.left")
+        }
+        Slider(value: horizontal, in: -0.08...0.08, step: 0.0025) { Text("Horizontal Alignment") }
+          .frame(maxWidth: 200)
+        Button {
+          horizontal.wrappedValue += 0.0025
+        } label: {
+          Label("Right Eye Right", systemImage: "arrow.right")
+        }
       }
-      .frame(maxWidth: 200)
-      Button {
-        manager.setStereoAlignment(offset + 0.005)
-      } label: {
-        Label("Right Eye Up", systemImage: "arrow.up")
-      }
-      if manager.manualStereoEyeOffset != nil {
-        Button("Reset to Auto") { manager.setStereoAlignment(nil) }
+      if manager.manualStereoEyeOffset != nil || manager.stereoHorizontalOffset != 0 {
+        Button("Reset Alignment") {
+          manager.setStereoAlignment(nil)
+          manager.setStereoHorizontalAlignment(0)
+        }
       }
     }
     .disabled(manager.cinemaPhase.isPreparing)
@@ -417,6 +443,7 @@ private struct VisionStereoSurface: View {
   let onDetected: (VisionStereoLayout) -> Void
   let onResolution: (CGSize) -> Void
   let manualOffset: Double?
+  let horizontalOffset: Double
   let onAlignment: (Double) -> Void
   let controlsVisible: Bool
 
@@ -477,12 +504,14 @@ private struct VisionStereoSurface: View {
                                description: Text("You can also choose a format in the 3D Format menu."))
       }
     }
-    .task {
+    .task(id: player.currentItem) {
       frames.start(item: player.currentItem, layout: layout, onDetected: autoDetect ? onDetected : nil,
                    onResolution: onResolution, onAlignment: onAlignment)
       frames.setManualOffset(manualOffset)
+      frames.setHorizontalOffset(horizontalOffset)
     }
     .onChange(of: manualOffset) { _, offset in frames.setManualOffset(offset) }
+    .onChange(of: horizontalOffset) { _, offset in frames.setHorizontalOffset(offset) }
     .onChange(of: autoDetect) { _, enabled in
       frames.setDetection(enabled ? onDetected : nil)
     }
@@ -512,6 +541,7 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
   private var onDetected: ((VisionStereoLayout) -> Void)?
   private var rightEyeOffset = 0.0
   private var manualOffset: Double?
+  private var horizontalOffset = 0.0
   private var lastFrame: (CVPixelBuffer, CMTime)?
   private var redrawRequested = false
   private var onResolution: ((CGSize) -> Void)?
@@ -548,6 +578,11 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     redrawRequested = true
   }
 
+  func setHorizontalOffset(_ offset: Double) {
+    horizontalOffset = offset
+    redrawRequested = true
+  }
+
   func stop() {
     displayLink?.invalidate()
     displayLink = nil
@@ -565,6 +600,7 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     rightEyeOffset = 0
     lastFrame = nil
     manualOffset = nil
+    horizontalOffset = 0
     redrawRequested = false
     captions = ""
     failed = false
@@ -598,7 +634,9 @@ private final class VisionStereoFrames: NSObject, ObservableObject, AVPlayerItem
     }
     guard layout != .automatic else { return }
     if splitter == nil { splitter = VisionStereoFrameSplitter() }
-    guard let sample = splitter?.sample(from: frame, layout: layout, time: time, rightEyeOffset: manualOffset ?? rightEyeOffset) else {
+    guard let sample = splitter?.sample(from: frame, layout: layout, time: time,
+                                       rightEyeOffset: manualOffset ?? rightEyeOffset,
+                                       horizontalOffset: horizontalOffset) else {
       failed = true
       link.invalidate()
       return
@@ -641,7 +679,8 @@ struct VisionStereoFrameSplitter {
   }
 
   mutating func sample(from frame: CVPixelBuffer, layout: VisionStereoLayout, time: CMTime,
-                       rightEyeOffset: Double = 0, output: CGSize? = nil) -> CMSampleBuffer? {
+                       rightEyeOffset: Double = 0, horizontalOffset: Double = 0,
+                       output: CGSize? = nil) -> CMSampleBuffer? {
     let frameWidth = CVPixelBufferGetWidth(frame)
     let frameHeight = CVPixelBufferGetHeight(frame)
     let stacked = layout == .topAndBottom
@@ -684,19 +723,24 @@ struct VisionStereoFrameSplitter {
         CVBufferRemoveAttachment(frame, kCVImageBufferCleanApertureKey)
       }
     }
-    let shift = Int((rightEyeOffset * Double(height) / 2).rounded()) * 2
-    let cropHeight = height - abs(shift)
-    guard cropHeight > 0 else { return nil }
+    let shiftX = Int((horizontalOffset * Double(width) / 2).rounded()) * 2
+    let shiftY = Int((rightEyeOffset * Double(height) / 2).rounded()) * 2
+    // Use a proportional crop, otherwise shifting just one axis stretches the picture.
+    let scale = min(Double(width - abs(shiftX)) / Double(width), Double(height - abs(shiftY)) / Double(height))
+    let cropWidth = Int((Double(width) * scale).rounded(.down)) & ~1
+    let cropHeight = Int((Double(height) * scale).rounded(.down)) & ~1
+    guard cropHeight > 0, cropWidth > 0 else { return nil }
     var buffers: [CMTaggedBuffer] = []
     for index in 0..<2 {
       var eyeBuffer: CVPixelBuffer?
       guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &eyeBuffer) == 0, let eyeBuffer else { return nil }
-      let x = stacked ? 0 : Double(index * eyeWidth - frameWidth / 2) + Double(eyeWidth) / 2
-      let eyeTop = stacked ? index * eyeHeight : 0
-      let cropTop = eyeTop + (index == 0 ? max(0, -shift) : max(0, shift))
-      let y = Double(cropTop) + Double(cropHeight - frameHeight) / 2
+      let direction = index == 0 ? -1 : 1
+      let eyeCenterX = stacked ? Double(frameWidth) / 2 : (Double(index) + 0.5) * Double(eyeWidth)
+      let eyeCenterY = stacked ? (Double(index) + 0.5) * Double(eyeHeight) : Double(frameHeight) / 2
+      let x = eyeCenterX - Double(frameWidth) / 2 + Double(direction * shiftX) / 2
+      let y = eyeCenterY - Double(frameHeight) / 2 + Double(direction * shiftY) / 2
       let crop = [
-        kCVImageBufferCleanApertureWidthKey as String: Double(width),
+        kCVImageBufferCleanApertureWidthKey as String: Double(cropWidth),
         kCVImageBufferCleanApertureHeightKey as String: Double(cropHeight),
         kCVImageBufferCleanApertureHorizontalOffsetKey as String: x,
         kCVImageBufferCleanApertureVerticalOffsetKey as String: y

@@ -25,7 +25,7 @@ Native **iOS · iPadOS · macOS** client for the [kino.pub](https://kino.pub) se
 
 This fork adds a native visionOS app for Apple Vision Pro. It supports an attached glass library rail, video quality selection, a floating video window, Sports Multiview, and stereo playback for side-by-side and top-and-bottom films. Apple Cinema prepares a native stereo copy for Apple’s Environment player, with your playback language preferences. The preparation step downloads the movie.
 
-[Download the visionOS preview](https://github.com/kirniy/kinopub-apple-client/releases/tag/visionos-build-14) · [Build and sign the visionOS app](VISIONOS-PREVIEW.md)
+[Download the visionOS preview](https://github.com/kirniy/kinopub-apple-client/releases/tag/visionos-build-16) · [Build and sign the visionOS app](VISIONOS-PREVIEW.md)
 
 ## Features
 

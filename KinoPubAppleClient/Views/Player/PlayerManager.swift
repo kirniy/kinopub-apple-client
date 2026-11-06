@@ -118,6 +118,10 @@ class PlayerManager: ObservableObject {
   @Published private(set) var selectedVisionRendition: VisionVideoRendition?
   @Published private(set) var videoResolution: CGSize = .zero
   @Published private(set) var usesProfileQualityLimit = StreamQuality.current != .auto
+  @Published private(set) var visionQualitySwitching = false
+  @Published var visionQualityFailed = false
+  private var visionAdaptiveItem: AVPlayerItem?
+  private var visionQualityPlaylist: VisionQualityPlaylist?
 
   enum CinemaPhase {
     case idle, downloading(Double), converting(Double), ready, failed(String)
@@ -139,6 +143,7 @@ class PlayerManager: ObservableObject {
   private var cinemaAudioChoice: (name: String, language: String?)?
   @Published private(set) var stereoEyeOffset = 0.0
   @Published private(set) var manualStereoEyeOffset: Double?
+  @Published private(set) var stereoHorizontalOffset = 0.0
 
   private var stereoAlignmentKey: String {
     "\(stereoLayoutKey).alignment.\(resolvedStereoLayout.rawValue)"
@@ -164,6 +169,17 @@ class PlayerManager: ObservableObject {
   func restoreStereoAlignment() {
     let saved = UserDefaults.standard.object(forKey: stereoAlignmentKey) as? Double
     manualStereoEyeOffset = saved.map { min(max($0, -0.32), 0.32) }
+    stereoHorizontalOffset = min(max(UserDefaults.standard.double(forKey: stereoAlignmentKey + ".horizontal"), -0.08), 0.08)
+  }
+
+  func setStereoHorizontalAlignment(_ offset: Double) {
+    let limited = min(max(offset, -0.08), 0.08)
+    guard limited != stereoHorizontalOffset else { return }
+    let key = stereoAlignmentKey + ".horizontal"
+    if limited == 0 { UserDefaults.standard.removeObject(forKey: key) }
+    else { UserDefaults.standard.set(limited, forKey: key) }
+    stereoHorizontalOffset = limited
+    cancelAppleCinemaPreparation()
   }
 
   @MainActor
@@ -180,6 +196,7 @@ class PlayerManager: ObservableObject {
     let resolution = player.currentItem?.preferredMaximumResolution ?? .zero
     let size = resolution == .zero ? CGSize(width: 1920, height: 1080) : resolution
     let eyeOffset = manualStereoEyeOffset ?? stereoEyeOffset
+    let horizontalOffset = stereoHorizontalOffset
     cinemaJobID = id
     cinemaPhase = .downloading(0)
     let update: @Sendable (CinemaPhase) async -> Void = { [weak self] phase in
@@ -197,7 +214,8 @@ class PlayerManager: ObservableObject {
         var prepared = false
         defer { if !prepared { try? FileManager.default.removeItem(at: directory) } }
         let material = try await source.download(to: directory) { await update(.downloading($0)) }
-        try await VisionCinemaEncoder.encode(material, layout: layout, eyeOffset: eyeOffset, to: destination) {
+        try await VisionCinemaEncoder.encode(material, layout: layout, eyeOffset: eyeOffset,
+                                            horizontalOffset: horizontalOffset, to: destination) {
           await update(.converting($0))
         }
         try Task.checkCancellation()
@@ -377,19 +395,83 @@ class PlayerManager: ObservableObject {
       .sorted { ($0.size.width, $0.size.height) > ($1.size.width, $1.size.height) }
   }
 
-  func setVisionRendition(_ rendition: VisionVideoRendition?) {
-    guard let item = player.currentItem else { return }
-    usesProfileQualityLimit = false
+  @MainActor
+  func setVisionRendition(_ rendition: VisionVideoRendition?, useProfile: Bool = false) async {
+    guard let current = player.currentItem, !isCinemaPlaying, !visionQualitySwitching else { return }
+    if is3D && (rendition != nil || visionAdaptiveItem != nil) {
+      guard rendition != selectedVisionRendition || useProfile != usesProfileQualityLimit else { return }
+      do {
+        try await switchStereoRendition(rendition, useProfile: useProfile, current: current)
+      } catch {
+        if !Task.isCancelled { visionQualityFailed = true }
+        return
+      }
+    }
+    usesProfileQualityLimit = useProfile
     selectedVisionRendition = rendition
-    item.preferredMaximumResolution = rendition?.size ?? .zero
-    item.preferredPeakBitRate = rendition?.peakBitRate ?? 0
+    player.currentItem?.preferredMaximumResolution = useProfile ? StreamQuality.current.maxResolution ?? .zero : rendition?.size ?? .zero
+    player.currentItem?.preferredPeakBitRate = rendition?.peakBitRate ?? 0
   }
 
-  func restoreVisionProfileQuality() {
-    setVisionRendition(nil)
-    if let limit = StreamQuality.current.maxResolution {
-      player.currentItem?.preferredMaximumResolution = limit
-      usesProfileQualityLimit = true
+  @MainActor
+  private func switchStereoRendition(_ rendition: VisionVideoRendition?, useProfile: Bool, current: AVPlayerItem) async throws {
+    let adaptive = visionAdaptiveItem ?? current
+    visionQualitySwitching = true
+    defer { visionQualitySwitching = false }
+
+    let replacement: AVPlayerItem
+    let playlist: VisionQualityPlaylist?
+    if let rendition {
+      guard let asset = adaptive.asset as? AVURLAsset else { throw VisionCinemaError.unsupportedStream }
+      let (contents, base) = try await VisionCinemaSource.playlist(asset.url)
+      let pinned = try VisionQualityPlaylist(contents: contents, base: base, size: rendition.size)
+      playlist = pinned
+      replacement = pinned.makeItem()
+      guard try await replacement.asset.load(.isPlayable) else { throw VisionCinemaError.unsupportedStream }
+    } else {
+      playlist = nil
+      replacement = adaptive
+    }
+    try await copyVisionMediaSelection(from: current, to: replacement)
+    guard !Task.isCancelled, !isCinemaPlaying, player.currentItem === current else { throw CancellationError() }
+
+    let time = player.currentTime()
+    let wasPlaying = player.timeControlStatus != .paused
+    let previousPlaylist = visionQualityPlaylist
+    let previousResolution = videoResolution
+    replacement.externalMetadata = current.externalMetadata
+    replacement.preferredMaximumResolution = useProfile ? StreamQuality.current.maxResolution ?? .zero : .zero
+    visionQualityPlaylist = playlist
+    player.replaceCurrentItem(with: replacement)
+    videoResolution = .zero
+    if wasPlaying { player.play() }
+    let seeked = time.isNumeric ? await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) : true
+    guard player.currentItem === replacement else { throw CancellationError() }
+    guard seeked, replacement.status != .failed else {
+      visionQualityPlaylist = previousPlaylist
+      player.replaceCurrentItem(with: current)
+      videoResolution = previousResolution
+      throw VisionCinemaError.unsupportedStream
+    }
+    bindPlaybackItem(replacement, applySelection: false)
+    visionAdaptiveItem = playlist == nil ? nil : adaptive
+    cancelAppleCinemaPreparation()
+  }
+
+  @MainActor
+  private func copyVisionMediaSelection(from source: AVPlayerItem, to replacement: AVPlayerItem) async throws {
+    for characteristic in [AVMediaCharacteristic.audible, .legible] {
+      guard let from = try await source.asset.loadMediaSelectionGroup(for: characteristic),
+            let to = try await replacement.asset.loadMediaSelectionGroup(for: characteristic) else { continue }
+      guard let selected = source.currentMediaSelection.selectedMediaOption(in: from) else {
+        if to.allowsEmptySelection { replacement.select(nil, in: to) }
+        continue
+      }
+      if let option = to.mediaSelectionOption(withPropertyList: selected.propertyList()) ?? to.options.first(where: {
+        $0.extendedLanguageTag == selected.extendedLanguageTag && $0.displayName == selected.displayName
+      }) {
+        replacement.select(option, in: to)
+      }
     }
   }
 
@@ -852,6 +934,7 @@ class PlayerManager: ObservableObject {
     }
   }
 
+  @MainActor
   func fetchWatchMark() async {
     // Only media has a resume point (live/trailers don't).
     guard watchMode == .media else { return }

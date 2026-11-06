@@ -211,7 +211,7 @@ struct VisionCinemaSource: Sendable {
     throw VisionCinemaError.originalAudio
   }
 
-  private static func playlist(_ url: URL) async throws -> (String, URL) {
+  static func playlist(_ url: URL) async throws -> (String, URL) {
     let (data, base) = try await fetch(url)
     guard let contents = String(data: data, encoding: .utf8),
           lines(contents).first == "#EXTM3U" else { throw VisionCinemaError.unsupportedStream }
@@ -239,14 +239,14 @@ struct VisionCinemaSource: Sendable {
     throw VisionCinemaError.download
   }
 
-  private static func remoteURL(_ uri: String, relativeTo base: URL) -> URL? {
+  static func remoteURL(_ uri: String, relativeTo base: URL) -> URL? {
     guard !uri.isEmpty, !uri.hasPrefix("#"),
           let url = URL(string: uri, relativeTo: base)?.absoluteURL,
           ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return nil }
     return url
   }
 
-  private static func lines(_ content: String) -> [String] {
+  static func lines(_ content: String) -> [String] {
     content.split(whereSeparator: \.isNewline)
       .map { $0.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\u{FEFF}"))) }
       .filter { !$0.isEmpty }
@@ -254,7 +254,7 @@ struct VisionCinemaSource: Sendable {
 
   private static let attributePattern = try! NSRegularExpression(pattern: #"([A-Z0-9-]+)=(?:"([^"]*)"|([^,]*))"#)
 
-  private static func attributes(_ line: String, tag: String) -> [String: String]? {
+  static func attributes(_ line: String, tag: String) -> [String: String]? {
     guard line.hasPrefix(tag) else { return nil }
     let source = String(line.dropFirst(tag.count))
     var attributes: [String: String] = [:]

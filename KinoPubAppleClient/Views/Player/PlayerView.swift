@@ -8,6 +8,9 @@
 import Foundation
 import SwiftUI
 import AVKit
+#if os(visionOS)
+import KinoPubUI
+#endif
 #if os(iOS) || os(visionOS)
 import UIKit
 #endif
@@ -20,8 +23,10 @@ struct PlayerView: View {
 #if os(visionOS)
   @EnvironmentObject private var floatingPlayback: VisionFloatingPlayback
   @Environment(\.openWindow) private var openWindow
+  @StateObject private var fullScreen = VisionFullScreenPresentation()
   @State private var movedToWindow = false
   @State private var playbackPrepared = false
+  @State private var showFullScreenError = false
 #endif
 
   init(manager: @autoclosure @escaping () -> PlayerManager) {
@@ -57,7 +62,10 @@ struct PlayerView: View {
       if !movedToWindow {
         Group {
           if playerManager.is3D { VisionStereoPlayer(manager: playerManager) }
-          else { VisionNativePlayer(player: playerManager.player, qualityManager: playerManager) }
+          else {
+            VisionNativePlayer(player: playerManager.player, qualityManager: playerManager,
+                               fullScreen: fullScreen)
+          }
         }
           .safeAreaInset(edge: .top, spacing: 0) {
             if !playerManager.is3D || playerManager.visionStereoControlsVisible || playerManager.resolvedStereoLayout == .native {
@@ -73,7 +81,18 @@ struct PlayerView: View {
                 Button { moveToWindow() } label: {
                   Label("Float Video", systemImage: "pip.enter")
                 }
-                .disabled(!playbackPrepared)
+                .disabled(!playbackPrepared || fullScreen.isOpening)
+                if !playerManager.is3D {
+                  Button {
+                    Task { showFullScreenError = !(await fullScreen.open()) }
+                  } label: {
+                    Label("Open in Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+                  }
+                  .buttonStyle(.borderedProminent)
+                  .tint(Color.KinoPub.accent)
+                  .controlSize(.large)
+                  .disabled(fullScreen.isOpening)
+                }
               }
               .padding(.horizontal, 20)
               .padding(.vertical, 8)
@@ -81,7 +100,7 @@ struct PlayerView: View {
           }
       }
     }
-    .task {
+    .task { @MainActor in
       floatingPlayback.manager?.player.pause()
       let session = AVAudioSession.sharedInstance()
       try? session.setCategory(.playback, mode: .moviePlayback)
@@ -95,6 +114,9 @@ struct PlayerView: View {
     }
     .onDisappear {
       if !movedToWindow { playerManager.player.pause() }
+    }
+    .alert("Could Not Open Full Screen", isPresented: $showFullScreenError) {
+      Button("OK", role: .cancel) {}
     }
     .playbackErrorAlert($playerManager.playbackError, onDismiss: { dismiss() })
 #elseif os(macOS)
@@ -146,6 +168,21 @@ struct PlayerView: View {
 }
 
 #if os(visionOS)
+@MainActor
+final class VisionFullScreenPresentation: ObservableObject {
+  weak var controller: AVPlayerViewController?
+  @Published private(set) var isOpening = false
+
+  func open() async -> Bool {
+    guard let controller, controller.viewIfLoaded?.window != nil else { return false }
+    let experience = controller.experienceController
+    guard !isOpening, experience.experience == .embedded else { return true }
+    isOpening = true
+    defer { isOpening = false }
+    return await experience.transition(to: .expanded) == .completed
+  }
+}
+
 @MainActor
 final class VisionFloatingPlayback: ObservableObject {
   static let windowID = "kinopub-floating-video"
@@ -225,6 +262,7 @@ private struct VisionFloatingPlayerContent: View {
 struct VisionNativePlayer: UIViewControllerRepresentable {
   let player: AVPlayer
   var qualityManager: PlayerManager? = nil
+  var fullScreen: VisionFullScreenPresentation? = nil
 
   func makeUIViewController(context: Context) -> AVPlayerViewController {
     let controller = AVPlayerViewController()
@@ -246,6 +284,7 @@ struct VisionNativePlayer: UIViewControllerRepresentable {
       portal.aspectRatio = 2.39
       controller.viewport.portal = portal
     }
+    fullScreen?.controller = controller
     return controller
   }
 
